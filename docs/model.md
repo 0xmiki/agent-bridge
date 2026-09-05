@@ -50,16 +50,20 @@ must report omissions or unsupported requirements before execution.
 The first implementation models a bridge-managed run as:
 
 ```text
-queued -> running -> completed | failed | cancelled
-             |
-             +-> cancelling -> cancelled | completed | failed
-             |
-             +-> unknown -> running | completed | failed | cancelled
+queued -> starting -> running -> completed | failed | cancelled
+              |          |
+              +----------+-> cancelling -> cancelled | completed | failed
+              |          |
+              +----------+-> unknown -> running | completed | failed | cancelled
 ```
 
 - Cancelling queued work can settle locally, before it is dispatched.
+- Dispatch moves the run to starting before external I/O. A lost acknowledgement
+  may mean the provider already accepted work; it must not leave the run queued.
+  Providers may report a terminal outcome without a separate start notification.
 - Requesting cancellation of running work records intent, not success. Completion
-  may win the race. A lost connection while running or cancelling yields unknown.
+  may win the race. A lost connection while starting, running, or cancelling yields
+  unknown. A late start acknowledgement must not erase cancellation intent.
 - Unknown means we cannot establish the execution outcome. Reconciliation requires
   provider evidence; silence does not prove failure or make retry safe. A recovered
   running execution with a pending cancellation returns to cancelling.
