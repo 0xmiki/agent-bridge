@@ -1,4 +1,5 @@
 #![cfg(feature = "sqlite")]
+use agent_bridge::ContinuationId;
 use agent_bridge::records::*;
 use agent_bridge::{
     ActorId, Content, ContextManifest, InstructionRef, InstructionRole, Message, RecordId,
@@ -248,7 +249,72 @@ fn migrations_coexist_with_application_tables_and_user_version() {
             .query_row("SELECT version FROM agent_bridge_schema", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        1
+        2
+    );
+}
+
+#[test]
+fn upgrades_a_version_one_database_without_losing_records() {
+    let database = Database::new();
+    let connection = Connection::open(database.path()).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../src/records/sqlite/migrations/0001_records.sql"
+        ))
+        .unwrap();
+    connection
+        .execute("INSERT INTO agent_bridge_sessions (id) VALUES ('s')", [])
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO agent_bridge_runs (id, session_id, slot_id, context_json)
+             VALUES ('r', 's', 'slot', ?1)",
+            [
+                json!({"version":1,"data":{"records":[],"instructions":[],"resources":[]}})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO agent_bridge_records
+             (id, session_id, run_id, sequence, actor_id, payload_json, state, revision)
+             VALUES ('before-upgrade', 's', 'r', 0, 'reviewer', ?1, 'complete', 0)",
+            [json!({"version":1,"data":{"type":"message","data":{"kind":"agent","message":{"content":[{"type":"text","data":"kept"}]}}}})
+                .to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE agent_bridge_sessions SET next_sequence = 1 WHERE id = 's'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = database.open();
+    assert!(matches!(
+        &store
+            .get(&RecordId::new("before-upgrade").unwrap())
+            .unwrap()
+            .record
+            .payload,
+        Payload::Message { message, .. }
+            if message.content == vec![Content::Text("kept".into())]
+    ));
+    let connection = Connection::open(database.path()).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT version FROM agent_bridge_schema", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+    assert!(
+        connection
+            .prepare("SELECT id FROM agent_bridge_continuations")
+            .is_ok()
     );
 }
 
@@ -521,4 +587,100 @@ fn open_records_are_not_automatically_replayed_or_finalized_on_reopen() {
     let reopened = database.open();
     assert_eq!(reopened.get(&record.record.id).unwrap(), record);
     assert_eq!(reopened.register_run(spec("r")), Ok(false));
+}
+
+fn continuation(id: &str) -> Continuation {
+    Continuation {
+        id: ContinuationId::new(id).unwrap(),
+        session_id: SessionId::new("s").unwrap(),
+        slot_id: SlotId::new("slot").unwrap(),
+        adapter: "acp-v1".into(),
+        scope: "profile-a".into(),
+        native_key: "native-session".into(),
+        predecessor: None,
+        data: json!({"version":1,"cwd":"/workspace"}),
+    }
+}
+
+#[test]
+fn continuation_claim_and_successor_survive_reopen() {
+    let database = Database::new();
+    let store = database.open();
+    store.create_session(SessionId::new("s").unwrap()).unwrap();
+    let first = continuation("first");
+    store.save_continuation(first.clone()).unwrap();
+    drop(store);
+
+    let store = database.open();
+    assert_eq!(
+        store.get_continuation(&first.id).unwrap().state,
+        ContinuationState::Available
+    );
+    store.claim_continuation(&first.id).unwrap();
+    let mut second = continuation("second");
+    second.predecessor = Some(first.id.clone());
+    store.save_continuation(second.clone()).unwrap();
+    drop(store);
+
+    let store = database.open();
+    let old = store.get_continuation(&first.id).unwrap();
+    assert_eq!(old.state, ContinuationState::Claimed);
+    assert!(!old.latest);
+    assert_eq!(
+        store.get_continuation(&second.id).unwrap().continuation,
+        second
+    );
+}
+
+#[test]
+fn independent_connections_claim_a_continuation_once() {
+    let database = Database::new();
+    let store = database.open();
+    store.create_session(SessionId::new("s").unwrap()).unwrap();
+    let continuation = continuation("claim-race");
+    store.save_continuation(continuation.clone()).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let threads: Vec<_> = (0..2)
+        .map(|_| {
+            let store = database.open();
+            let barrier = barrier.clone();
+            let id = continuation.id.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.claim_continuation(&id)
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(StoreError::ContinuationClaimed)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn corrupted_continuation_identity_is_rejected() {
+    let database = Database::new();
+    let store = database.open();
+    store.create_session(SessionId::new("s").unwrap()).unwrap();
+    let continuation = continuation("corrupt");
+    store.save_continuation(continuation.clone()).unwrap();
+    let connection = Connection::open(database.path()).unwrap();
+    connection
+        .execute(
+            "UPDATE agent_bridge_continuations SET native_key = 'different' WHERE id = ?1",
+            [continuation.id.as_str()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.get_continuation(&continuation.id),
+        Err(StoreError::CorruptData(_))
+    ));
 }

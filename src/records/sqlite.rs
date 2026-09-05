@@ -1,4 +1,5 @@
 mod codec;
+mod continuation;
 
 use super::*;
 use crate::{ContextManifest, InvalidId, SlotId};
@@ -10,7 +11,10 @@ use std::{
     time::Duration,
 };
 
-const MIGRATIONS: &[&str] = &[include_str!("sqlite/migrations/0001_records.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("sqlite/migrations/0001_records.sql"),
+    include_str!("sqlite/migrations/0002_continuations.sql"),
+];
 const RECORD_COLUMNS: &str = "id, session_id, run_id, sequence, actor_id, reply_to_id, source_json, payload_json, state, revision, initial_json";
 
 /// Local SQLite records with transactional mutation and versioned JSON payloads.
@@ -124,6 +128,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         "SELECT id, next_sequence FROM agent_bridge_sessions LIMIT 0",
         "SELECT id, session_id, slot_id, context_json FROM agent_bridge_runs LIMIT 0",
         "SELECT request_id, response_id FROM agent_bridge_decisions LIMIT 0",
+        "SELECT id, session_id, adapter, scope, native_key, predecessor_id, descriptor_json, state, latest FROM agent_bridge_continuations LIMIT 0",
     ] {
         transaction.prepare(query).map_err(database_error)?;
     }

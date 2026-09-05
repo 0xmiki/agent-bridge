@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use agent_client_protocol::{
@@ -121,7 +120,7 @@ impl Route {
 
 pub(super) struct Routes {
     fault: watch::Sender<bool>,
-    sessions: HashSet<NativeSessionId>,
+    pub(super) sessions: HashSet<NativeSessionId>,
     active: HashMap<NativeSessionId, Arc<Mutex<Route>>>,
 }
 
@@ -219,11 +218,14 @@ pub(super) fn route_permission(
 /// borrow this handle at a time. A dropped or interrupted stream retires the handle
 /// rather than allowing late provider traffic to mix into another run.
 pub struct AcpSession<'connection> {
-    connection: &'connection AcpConnection,
-    session_id: SessionId,
-    slot_id: SlotId,
-    info: NewSessionResponse,
-    retired: bool,
+    pub(super) connection: &'connection AcpConnection,
+    pub(super) session_id: SessionId,
+    pub(super) slot_id: SlotId,
+    pub(super) info: NewSessionResponse,
+    pub(super) retired: bool,
+    pub(super) cwd: PathBuf,
+    pub(super) predecessor: Option<crate::ContinuationId>,
+    pub(super) quiescent: bool,
 }
 
 impl AcpConnection {
@@ -243,26 +245,11 @@ impl AcpConnection {
         if self.is_closed() {
             return Err(AcpError::Closed);
         }
-        for server in &mcp_servers {
-            let supported = match server {
-                McpServer::Stdio(server) => {
-                    if !server.command.is_absolute() {
-                        return Err(AcpError::InvalidMcpCommand);
-                    }
-                    true
-                }
-                McpServer::Http(_) => self.info.agent_capabilities.mcp_capabilities.http,
-                McpServer::Sse(_) => self.info.agent_capabilities.mcp_capabilities.sse,
-                _ => false,
-            };
-            if !supported {
-                return Err(AcpError::UnsupportedMcpTransport);
-            }
-        }
+        self.validate_mcp(&mcp_servers)?;
         let info = timeout(
-            Duration::from_secs(30),
+            self.session_timeout,
             self.connection
-                .send_request(NewSessionRequest::new(cwd).mcp_servers(mcp_servers))
+                .send_request(NewSessionRequest::new(cwd.clone()).mcp_servers(mcp_servers))
                 .block_task(),
         )
         .await
@@ -283,7 +270,30 @@ impl AcpConnection {
             slot_id,
             info,
             retired: false,
+            cwd,
+            predecessor: None,
+            quiescent: true,
         })
+    }
+
+    pub(super) fn validate_mcp(&self, mcp_servers: &[McpServer]) -> Result<(), AcpError> {
+        for server in mcp_servers {
+            let supported = match server {
+                McpServer::Stdio(server) => {
+                    if !server.command.is_absolute() {
+                        return Err(AcpError::InvalidMcpCommand);
+                    }
+                    true
+                }
+                McpServer::Http(_) => self.info.agent_capabilities.mcp_capabilities.http,
+                McpServer::Sse(_) => self.info.agent_capabilities.mcp_capabilities.sse,
+                _ => false,
+            };
+            if !supported {
+                return Err(AcpError::UnsupportedMcpTransport);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -301,7 +311,7 @@ impl<'connection> AcpSession<'connection> {
         if text.trim().is_empty() {
             return Err(AcpError::EmptyPrompt.into());
         }
-        if self.retired {
+        if self.retired || !self.quiescent {
             return Err(AcpError::SessionUnavailable.into());
         }
         if self.connection.is_closed() {
@@ -341,13 +351,14 @@ impl<'connection> AcpSession<'connection> {
         if text.trim().is_empty() {
             return Err(AcpError::EmptyPrompt);
         }
-        if self.retired {
+        if self.retired || !self.quiescent {
             return Err(AcpError::SessionUnavailable);
         }
         if self.connection.is_closed() {
             return Err(AcpError::Closed);
         }
         let (sender, receiver) = mpsc::channel(EVENT_CAPACITY);
+        self.quiescent = false;
         let route = Arc::new(Mutex::new(Route {
             fault: self.connection.routes.lock().unwrap().fault.clone(),
             run_id: id.clone(),
@@ -463,6 +474,7 @@ impl AcpRun<'_, '_> {
                     self.settled = true;
                     match result {
                         Ok(response) => {
+                            self.session.quiescent = true;
                             self.run
                                 .apply(if response.stop_reason == StopReason::Cancelled {
                                     RunEvent::CancellationConfirmed
@@ -474,6 +486,7 @@ impl AcpRun<'_, '_> {
                         }
                         Err(error) => {
                             self.run.apply(RunEvent::Failed).unwrap();
+                            self.session.retired = true;
                             Err(AcpError::Protocol(error))
                         }
                     }

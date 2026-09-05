@@ -24,7 +24,8 @@ async fn inspect() -> Result<(), agent_bridge::acp::AcpError> {
 ```
 
 `AcpLaunch` accepts an executable, individual arguments, environment overrides,
-and an initialization timeout. The default timeout is 15 seconds. Arguments are
+an initialization timeout, and a session-setup timeout. Defaults are 15 and 30
+seconds. Arguments are
 passed directly without shell parsing. No automatic installation or login occurs.
 The process inherits the host's directory and environment. Each new session supplies
 its own absolute workspace path. Launch configuration is not persisted.
@@ -140,6 +141,9 @@ before logging. Agent-bridge does not log protocol traffic or environment values
 - A real text run in a temporary workspace streamed `agent-bridge connected.` and
   returned `EndTurn` through OpenCode. No tool use was requested. This does not yet
   validate real MCP execution, permission behavior, or other providers.
+- A second OpenCode 1.18.25 check saved a continuation in SQLite, shut down the ACP
+  process, resumed from a new process, and recalled a unique phrase from native
+  context. See [provider continuations](continuations.md) for the limits.
 
 The fixture is a standalone Rust program compiled by the integration test using
 `rustc`, so tests need no installed AI CLI, credentials, Python, or network access.
@@ -152,16 +156,18 @@ text and does not replay application history, resolve context manifests, or stor
 continuation handles. The current empty core context manifest means no explicit
 record/resource selection was supplied; it does not mean the native session has
 no history. The optional [recorded-run wrapper](records.md) now assembles portable
-records in a memory or [SQLite store](sqlite.md). Persisted transcripts do not restore
-the provider's native session; continuation recovery remains open.
+records in a memory or [SQLite store](sqlite.md). Persisted transcripts remain separate
+from native context. The [continuation API](continuations.md) can hand off and resume
+an ACP session when the agent advertises `sessionCapabilities.resume`.
 
-Model selection, instruction injection, image input, native resume/close, structured
+Model selection, instruction injection, image input, native load/close, structured
 output, and other client requests remain outside this step. Updates outside active
 runs are not retained. Capability tests must establish those behaviors before the
-adapter claims support. The session-creation timeout is currently 30 seconds; timed
-out requests are not automatically retried or adopted later.
+adapter claims support. Timed-out setup requests are not retried or adopted later.
+After a continuation claim, a setup timeout permanently consumes that handle.
 
 ## References
 
 - [ACP Rust SDK 2.1.0](https://docs.rs/agent-client-protocol/2.1.0/agent_client_protocol/)
+- [ACP session setup and resume](https://agentclientprotocol.com/protocol/v1/session-setup)
 - [SDK subprocess implementation](https://docs.rs/crate/agent-client-protocol/2.1.0/source/src/acp_agent.rs)

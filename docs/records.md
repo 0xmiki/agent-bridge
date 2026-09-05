@@ -2,8 +2,8 @@
 
 Working implementation. `MemoryStore` is process-local and loses its data when the
 application exits. The optional [SQLite adapter](sqlite.md) persists records across
-restarts, using schema and JSON format version 1. Future format changes need explicit
-compatibility handling even while the public API continues to evolve.
+restarts. Its SQL schema is version 2 and record JSON remains version 1. Future format
+changes need explicit compatibility handling while the public API evolves.
 
 ## Recorded runs
 
@@ -118,6 +118,7 @@ return storage failures. No background retry proves an unknown action did not ha
 ## Next questions
 
 - Future schema and data-version migrations while preserving version 1 files.
+- Linking runs to the [continuations](continuations.md) they consume and produce.
 - Whether local and remote stores should share an async interface.
 - Resource deduplication and retention for large content.
 - Atomic execution intent, decision delivery, and crash recovery.

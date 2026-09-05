@@ -14,9 +14,10 @@ use agent_bridge::acp::{AcpConnection, AcpError, AcpLaunch};
 use agent_bridge::acp::{AcpEvent, AcpRun, AcpSession};
 use agent_bridge::acp::{RecordActors, RecordedRun, RecordingError};
 use agent_bridge::records::{
-    MemoryStore, MessageKind, Payload, PermissionOutcome, RecordState, RecordStore, StoreError,
+    ContinuationState, ContinuationStore, MemoryStore, MessageKind, Payload, PermissionOutcome,
+    RecordState, RecordStore, StoreError,
 };
-use agent_bridge::{ActorId, Content};
+use agent_bridge::{ActorId, Content, ContinuationId};
 use agent_bridge::{RunId, RunStatus, SessionId, SlotId};
 use agent_client_protocol::schema::v1::{
     ContentBlock, McpServer, McpServerHttp, McpServerStdio, SessionUpdate, StopReason,
@@ -732,6 +733,42 @@ async fn session_creation_errors_and_duplicate_ids_do_not_create_usable_handles(
     connection.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn new_session_timeout_is_configurable_and_does_not_retry() {
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let connection = AcpConnection::connect(
+        launch("new-hang")
+            .session_timeout(Duration::from_millis(100))
+            .env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        timeout(
+            Duration::from_secs(1),
+            connection.new_session(
+                SessionId::new("timed-out").unwrap(),
+                SlotId::new("slot").unwrap(),
+                std::env::current_dir().unwrap(),
+                vec![]
+            )
+        )
+        .await
+        .unwrap(),
+        Err(AcpError::RequestTimedOut)
+    ));
+    connection.shutdown().await.unwrap();
+    let messages = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        messages
+            .lines()
+            .filter(|line| line.contains("\"method\":\"session/new\""))
+            .count(),
+        1
+    );
+}
+
 fn actors() -> RecordActors {
     RecordActors {
         user: ActorId::new("person").unwrap(),
@@ -1065,6 +1102,341 @@ async fn checkpoint_conflicts_are_reported_and_stop_recording() {
             store.get(&original.record.id).unwrap().record.payload,
             other
         );
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn hands_off_and_resumes_the_same_native_session_across_connections() {
+    let files = TestFiles::new();
+    let resumed_log = files.path("resumed-messages");
+    let store = MemoryStore::default();
+    let first_id = ContinuationId::new("handoff-1").unwrap();
+
+    let connection = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    let native_id;
+    {
+        let mut session = new_session(&connection).await;
+        native_id = session.info().session_id.clone();
+        {
+            let mut run = session
+                .start_run(RunId::new("before-handoff").unwrap(), "Hello")
+                .unwrap();
+            while next(&mut run).await.is_some() {}
+        }
+        let saved = session.handoff(first_id.clone(), &store).unwrap();
+        assert_eq!(saved.state, ContinuationState::Available);
+        assert!(saved.latest);
+        assert_eq!(saved.continuation.native_key, native_id.to_string());
+    }
+    connection.shutdown().await.unwrap();
+
+    let connection = AcpConnection::connect(
+        launch("chat")
+            .continuation_scope("profile-a")
+            .env("BRIDGE_TEST_MESSAGES", resumed_log.to_string_lossy()),
+    )
+    .await
+    .unwrap();
+    {
+        let mut session = connection
+            .resume_saved(&store, &first_id, vec![])
+            .await
+            .unwrap();
+        assert_eq!(session.info().session_id, native_id);
+        let mut run = session
+            .start_run(RunId::new("after-resume").unwrap(), "Continue")
+            .unwrap();
+        assert_eq!(text(&drain(&mut run).await), "Hello world");
+        drop(run);
+
+        let second_id = ContinuationId::new("handoff-2").unwrap();
+        let saved = session.handoff(second_id.clone(), &store).unwrap();
+        assert_eq!(saved.continuation.predecessor, Some(first_id.clone()));
+        assert_eq!(saved.continuation.session_id.as_str(), "app-session");
+        assert_eq!(saved.continuation.slot_id.as_str(), "fixture-slot");
+        assert_eq!(saved.state, ContinuationState::Available);
+        assert!(!store.get_continuation(&first_id).unwrap().latest);
+    }
+    connection.shutdown().await.unwrap();
+
+    let messages: Vec<serde_json::Value> = std::fs::read_to_string(resumed_log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["method"] == "session/new")
+            .count(),
+        0
+    );
+    let resume = messages
+        .iter()
+        .find(|message| message["method"] == "session/resume")
+        .unwrap();
+    assert_eq!(resume["params"]["sessionId"], native_id.to_string());
+    let prompt = messages
+        .iter()
+        .find(|message| message["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(prompt["params"]["sessionId"], native_id.to_string());
+}
+
+#[tokio::test]
+async fn incompatible_or_unsupported_resume_does_not_claim_the_handle() {
+    let store = MemoryStore::default();
+    let id = ContinuationId::new("compatible").unwrap();
+    let connection = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    new_session(&connection)
+        .await
+        .handoff(id.clone(), &store)
+        .unwrap();
+    connection.shutdown().await.unwrap();
+
+    let wrong_scope = AcpConnection::connect(launch("chat").continuation_scope("profile-b"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        wrong_scope.resume_saved(&store, &id, vec![]).await,
+        Err(AcpError::IncompatibleContinuation)
+    ));
+    wrong_scope.shutdown().await.unwrap();
+
+    let wrong_version = AcpConnection::connect(
+        launch("chat")
+            .continuation_scope("profile-a")
+            .env("BRIDGE_TEST_AGENT_VERSION", "2"),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wrong_version.resume_saved(&store, &id, vec![]).await,
+        Err(AcpError::IncompatibleContinuation)
+    ));
+    wrong_version.shutdown().await.unwrap();
+
+    let unsupported =
+        AcpConnection::connect(launch("resume-unsupported").continuation_scope("profile-a"))
+            .await
+            .unwrap();
+    assert!(matches!(
+        unsupported.resume_saved(&store, &id, vec![]).await,
+        Err(AcpError::ResumeUnsupported)
+    ));
+    unsupported.shutdown().await.unwrap();
+    assert_eq!(
+        store.get_continuation(&id).unwrap().state,
+        ContinuationState::Available
+    );
+}
+
+#[tokio::test]
+async fn handoff_requires_a_scope_and_native_resume_support() {
+    let store = MemoryStore::default();
+    let unscoped = AcpConnection::connect(launch("chat")).await.unwrap();
+    assert!(matches!(
+        new_session(&unscoped)
+            .await
+            .handoff(ContinuationId::new("unscoped").unwrap(), &store),
+        Err(AcpError::ContinuationScopeRequired)
+    ));
+    unscoped.shutdown().await.unwrap();
+
+    let unsupported =
+        AcpConnection::connect(launch("resume-unsupported").continuation_scope("profile-a"))
+            .await
+            .unwrap();
+    assert!(matches!(
+        new_session(&unsupported)
+            .await
+            .handoff(ContinuationId::new("unsupported").unwrap(), &store),
+        Err(AcpError::ResumeUnsupported)
+    ));
+    unsupported.shutdown().await.unwrap();
+    assert!(matches!(
+        store.get_continuation(&ContinuationId::new("unscoped").unwrap()),
+        Err(StoreError::MissingContinuation)
+    ));
+    assert!(matches!(
+        store.get_continuation(&ContinuationId::new("unsupported").unwrap()),
+        Err(StoreError::MissingContinuation)
+    ));
+}
+
+#[tokio::test]
+async fn resume_failure_after_dispatch_consumes_the_handle() {
+    let store = MemoryStore::default();
+    let id = ContinuationId::new("missing-native").unwrap();
+    let source = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    new_session(&source)
+        .await
+        .handoff(id.clone(), &store)
+        .unwrap();
+    source.shutdown().await.unwrap();
+
+    let connection =
+        AcpConnection::connect(launch("resume-missing").continuation_scope("profile-a"))
+            .await
+            .unwrap();
+    assert!(matches!(
+        connection.resume_saved(&store, &id, vec![]).await,
+        Err(AcpError::Protocol(_))
+    ));
+    assert_eq!(
+        store.get_continuation(&id).unwrap().state,
+        ContinuationState::Claimed
+    );
+    assert!(matches!(
+        connection.resume_saved(&store, &id, vec![]).await,
+        Err(AcpError::SessionUnavailable)
+    ));
+    connection.shutdown().await.unwrap();
+
+    let fresh = AcpConnection::connect(launch("resume-missing").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        fresh.resume_saved(&store, &id, vec![]).await,
+        Err(AcpError::Store(StoreError::ContinuationClaimed))
+    ));
+    fresh.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn resume_timeout_consumes_the_handle_and_returns_promptly() {
+    let store = MemoryStore::default();
+    let id = ContinuationId::new("timed-out-native").unwrap();
+    let source = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    new_session(&source)
+        .await
+        .handoff(id.clone(), &store)
+        .unwrap();
+    source.shutdown().await.unwrap();
+
+    let connection = AcpConnection::connect(
+        launch("resume-hang")
+            .continuation_scope("profile-a")
+            .session_timeout(Duration::from_millis(100)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        timeout(
+            Duration::from_secs(1),
+            connection.resume_saved(&store, &id, vec![])
+        )
+        .await
+        .unwrap(),
+        Err(AcpError::RequestTimedOut)
+    ));
+    assert_eq!(
+        store.get_continuation(&id).unwrap().state,
+        ContinuationState::Claimed
+    );
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn preflight_errors_leave_a_continuation_available() {
+    let store = MemoryStore::default();
+    let id = ContinuationId::new("preflight").unwrap();
+    let source = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    new_session(&source)
+        .await
+        .handoff(id.clone(), &store)
+        .unwrap();
+    source.shutdown().await.unwrap();
+
+    let connection = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        connection
+            .resume_saved(
+                &store,
+                &id,
+                vec![McpServer::Stdio(McpServerStdio::new(
+                    "bad",
+                    "relative-command"
+                ))]
+            )
+            .await,
+        Err(AcpError::InvalidMcpCommand)
+    ));
+    assert_eq!(
+        store.get_continuation(&id).unwrap().state,
+        ContinuationState::Available
+    );
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn abandoned_or_failed_runs_cannot_be_handed_off() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("cancel").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    let mut session = new_session(&connection).await;
+    {
+        let mut run = session
+            .start_run(RunId::new("unfinished").unwrap(), "Hello")
+            .unwrap();
+        let _ = next(&mut run).await;
+    }
+    assert!(matches!(
+        session.handoff(ContinuationId::new("unsafe").unwrap(), &store),
+        Err(AcpError::UnsafeHandoff)
+    ));
+    connection.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn resumes_an_acp_handoff_after_the_sqlite_store_is_reopened() {
+    use agent_bridge::records::SqliteStore;
+
+    let files = TestFiles::new();
+    let database = files.path("continuation.sqlite3");
+    let continuation_id = ContinuationId::new("sqlite-handoff").unwrap();
+    let store = SqliteStore::open(&database).unwrap();
+    let source = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    let native_id = {
+        let session = new_session(&source).await;
+        let native_id = session.info().session_id.clone();
+        session.handoff(continuation_id.clone(), &store).unwrap();
+        native_id
+    };
+    source.shutdown().await.unwrap();
+    drop(store);
+
+    let reopened = SqliteStore::open(&database).unwrap();
+    let connection = AcpConnection::connect(launch("chat").continuation_scope("profile-a"))
+        .await
+        .unwrap();
+    {
+        let mut session = connection
+            .resume_saved(&reopened, &continuation_id, vec![])
+            .await
+            .unwrap();
+        assert_eq!(session.info().session_id, native_id);
+        let mut run = session
+            .start_run(RunId::new("after-sqlite-reopen").unwrap(), "Continue")
+            .unwrap();
+        assert_eq!(text(&drain(&mut run).await), "Hello world");
     }
     connection.shutdown().await.unwrap();
 }

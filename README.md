@@ -13,8 +13,9 @@ references, typed record envelopes, and an in-memory run lifecycle. The optional
 ACP adapter launches installed agents, creates sessions, streams text runs and tool
 activity, routes permission decisions, and handles cancellation. It can supply
 existing MCP server configuration when creating a session. Recorded runs assemble
-portable transcripts through memory or SQLite stores. Grant policies and provider
-continuation recovery are still to come.
+portable transcripts through memory or SQLite stores. Native ACP sessions can be
+handed off and resumed through single-use continuations. Grant policies, portable
+context restoration, and uncertain-outcome reconciliation are still to come.
 
 ## Development
 
@@ -79,3 +80,7 @@ This example writes a record, closes the store, and reads it after reopening.
 For a real agent, use `SqliteStore::open(path)` in place of `MemoryStore` when
 calling `start_recorded_run`. See [SQLite storage](docs/sqlite.md) for migrations,
 the versioned format, and restart behavior.
+
+Native session handoff is separate from saved history. See
+[provider continuations](docs/continuations.md) for the single-use claim model and
+the real two-process example.

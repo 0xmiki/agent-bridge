@@ -52,11 +52,17 @@ fn main() {
         io::stderr().flush().unwrap();
     }
     let version = if mode == "version" { 999 } else { 1 };
+    let sessions = if mode == "resume-unsupported" {
+        "{}"
+    } else {
+        r#"{"resume":{}}"#
+    };
+    let agent_version = std::env::var("BRIDGE_TEST_AGENT_VERSION").unwrap_or_else(|_| "1".into());
     if mode == "malformed" {
         println!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocolVersion\":\"bad\"}}}}");
     } else {
         println!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocolVersion\":{version},\"agentCapabilities\":{{\"loadSession\":true,\"promptCapabilities\":{{\"image\":true}}}},\"agentInfo\":{{\"name\":\"fixture\",\"version\":\"1\"}},\"authMethods\":[]}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocolVersion\":{version},\"agentCapabilities\":{{\"loadSession\":true,\"promptCapabilities\":{{\"image\":true}},\"sessionCapabilities\":{sessions}}},\"agentInfo\":{{\"name\":\"fixture\",\"version\":\"{agent_version}\"}},\"authMethods\":[]}}}}"
         );
     }
     io::stdout().flush().unwrap();
@@ -76,7 +82,11 @@ fn main() {
         "prompt-crash",
         "flood",
         "new-error",
+        "new-hang",
         "duplicate",
+        "resume-missing",
+        "resume-hang",
+        "resume-unsupported",
     ]
     .contains(&mode.as_str())
     {
@@ -137,7 +147,9 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
         }
         if line.contains("\"method\":\"session/new\"") {
             let id = scalar(&line, "id");
-            if mode == "new-error" {
+            if mode == "new-hang" {
+                continue;
+            } else if mode == "new-error" {
                 println!(
                     "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"fixture session error\"}}}}"
                 );
@@ -147,6 +159,16 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                     count += 1;
                 }
                 reply(id, &format!("{{\"sessionId\":\"native-{count}\"}}"));
+            }
+        } else if line.contains("\"method\":\"session/resume\"") {
+            let id = scalar(&line, "id");
+            if mode == "resume-missing" {
+                println!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"native session missing\"}}}}"
+                );
+                io::stdout().flush().unwrap();
+            } else if mode != "resume-hang" {
+                reply(id, "{}");
             }
         } else if line.contains("\"method\":\"session/prompt\"") {
             let session = scalar(&line, "sessionId");

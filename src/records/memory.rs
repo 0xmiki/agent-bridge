@@ -13,10 +13,44 @@ pub struct MemoryStore {
 
 #[derive(Default)]
 struct State {
+    continuations: continuation::Registry,
     sessions: HashMap<SessionId, Vec<RecordId>>,
     runs: HashMap<RunId, RunSpec>,
     records: HashMap<RecordId, Entry>,
     decisions: HashMap<RecordId, RecordId>,
+}
+
+impl ContinuationStore for MemoryStore {
+    fn save_continuation(
+        &self,
+        value: Continuation,
+    ) -> Result<Arc<ContinuationRecord>, StoreError> {
+        let mut state = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
+        if !state.sessions.contains_key(&value.session_id) {
+            return Err(StoreError::MissingSession);
+        }
+        state.continuations.save(value)
+    }
+    fn get_continuation(
+        &self,
+        id: &crate::ContinuationId,
+    ) -> Result<Arc<ContinuationRecord>, StoreError> {
+        self.inner
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .continuations
+            .get(id)
+    }
+    fn claim_continuation(
+        &self,
+        id: &crate::ContinuationId,
+    ) -> Result<Arc<ContinuationRecord>, StoreError> {
+        self.inner
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .continuations
+            .claim(id)
+    }
 }
 
 struct Entry {

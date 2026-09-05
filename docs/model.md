@@ -7,9 +7,10 @@ show a better boundary. See [philosophy.md](../philosophy.md) for the intent.
 Implementation checkpoints: the core types and lifecycle now have tests; the
 optional [ACP adapter](acp.md) can create sessions and stream text runs using the
 shared lifecycle. [Recorded runs](records.md) assemble portable payloads through
-a provisional local store backed by memory or [SQLite](sqlite.md). SQLite has a
-version 1 persistence format; future changes must migrate it or retain its decoder.
-Durable execution and provider continuation remain separate, open contracts.
+a provisional local store backed by memory or [SQLite](sqlite.md). SQLite now has
+schema version 2 while serialized record documents remain version 1. Native ACP
+[continuations](continuations.md) support explicit single-use handoff and resume.
+Durable execution and uncertain-outcome reconciliation remain open contracts.
 
 ## Four concepts
 
@@ -46,6 +47,11 @@ contains context, avoiding full transcript replay on every turn. A resume handle
 does not promise a snapshot or transferable private state. We need compatibility
 and synchronization checks before reusing it, especially after another slot has
 contributed to the session.
+
+The first continuation implementation persists opaque, immutable handoffs and claims
+each once before native resume. A successful resumed session can create a successor.
+This prevents deliberate double claims but does not prove provider state, synchronize
+portable records, or recover a claim whose outcome became unknown.
 
 Model changes normally apply between runs. Within-provider changes may preserve
 native continuation. Cross-provider changes require an explicitly allowed context
@@ -115,9 +121,9 @@ Neither ordinary metadata nor instruction text grants authority.
 
 ## Persistence direction
 
-Start with slots, sessions, runs, and records, plus provider continuation storage
-when we implement native resume. Resources can use a separate store. This is a
-logical model, not a requirement to squeeze everything into four SQL tables.
+The store now includes slots by reference, sessions, runs, records, and provider
+continuations. Resources can use a separate store. This is a logical model, not a
+requirement to squeeze everything into a fixed number of SQL tables.
 
 Memory and SQLite implementations now obey the same tested behavioral contract:
 stable IDs, unique session ordering, guarded state changes, atomic interaction
@@ -129,7 +135,7 @@ queue. Worker claims and leases need a separate contract if we add that capabili
 - Which instruction, history-restoration, model-switching, and structured-output
   semantics do the released ACP adapters actually preserve?
 - How should context manifests describe native context we cannot inspect?
-- What continuation state is needed to detect missing or duplicated context?
+- What provider evidence can reconcile a claimed continuation after a crash?
 - How should run configuration expose provider-specific options without leaking
   transport details into every application?
 - Which lifecycle facts can we observe for native subagents, and how do we represent

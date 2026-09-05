@@ -5,7 +5,9 @@
 
 mod memory;
 pub use memory::MemoryStore;
+mod continuation;
 mod rules;
+pub use continuation::{Continuation, ContinuationRecord, ContinuationState, ContinuationStore};
 #[cfg(feature = "sqlite")]
 mod sqlite;
 #[cfg(feature = "sqlite")]
@@ -208,6 +210,10 @@ pub enum StoreError {
     UnsupportedSchemaVersion(i64),
     UnsupportedDataVersion(u32),
     UnversionedSchema,
+    MissingContinuation,
+    ContinuationClaimed,
+    ContinuationConflict,
+    InvalidContinuation,
 }
 
 impl fmt::Display for StoreError {

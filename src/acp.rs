@@ -7,6 +7,7 @@
 //! No filesystem or terminal capabilities are advertised. This module does not
 //! log wire messages, install agents, or authenticate automatically.
 
+mod continuation;
 mod recording;
 mod session;
 pub use recording::{RecordActors, RecordedRun, RecordingError};
@@ -48,6 +49,8 @@ pub use agent_client_protocol::schema::v1::{
 pub struct AcpLaunch {
     process: AcpAgentConfig,
     initialize_timeout: Duration,
+    session_timeout: Duration,
+    continuation_scope: Option<String>,
 }
 
 impl AcpLaunch {
@@ -55,6 +58,8 @@ impl AcpLaunch {
         Self {
             process: AcpAgentConfig::new(executable),
             initialize_timeout: Duration::from_secs(15),
+            session_timeout: Duration::from_secs(30),
+            continuation_scope: None,
         }
     }
 
@@ -75,6 +80,21 @@ impl AcpLaunch {
         self.initialize_timeout = duration;
         self
     }
+
+    /// Maximum wait for new or resumed session setup. A timeout never retries.
+    #[must_use]
+    pub fn session_timeout(mut self, duration: Duration) -> Self {
+        self.session_timeout = duration;
+        self
+    }
+
+    /// Stable application-owned account/profile/environment namespace for handoffs.
+    /// Change it when switching credentials or provider state directories.
+    #[must_use]
+    pub fn continuation_scope(mut self, scope: impl Into<String>) -> Self {
+        self.continuation_scope = Some(scope.into());
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -92,6 +112,11 @@ pub enum AcpError {
     SessionUnavailable,
     InvalidPermission,
     EventBufferFull,
+    ResumeUnsupported,
+    ContinuationScopeRequired,
+    IncompatibleContinuation,
+    UnsafeHandoff,
+    Store(crate::records::StoreError),
     /// May include the SDK's bounded child stderr diagnostics. Do not log blindly.
     Protocol(agent_client_protocol::Error),
     Task(tokio::task::JoinError),
@@ -105,7 +130,7 @@ impl fmt::Display for AcpError {
             Self::UnsupportedProtocolVersion => f.write_str("agent did not negotiate ACP v1"),
             Self::ShutdownTimedOut => f.write_str("ACP shutdown timed out"),
             Self::RequestTimedOut => {
-                f.write_str("ACP session creation timed out; no retry was attempted")
+                f.write_str("ACP session setup timed out; no retry was attempted")
             }
             Self::Closed => f.write_str("ACP connection closed; execution outcome may be unknown"),
             Self::InvalidWorkingDirectory => {
@@ -125,6 +150,19 @@ impl fmt::Display for AcpError {
             Self::EventBufferFull => {
                 f.write_str("ACP event buffer filled; this run cannot be consumed reliably")
             }
+            Self::ResumeUnsupported => {
+                f.write_str("agent does not advertise native session resume")
+            }
+            Self::ContinuationScopeRequired => {
+                f.write_str("set a nonempty continuation scope for this provider connection")
+            }
+            Self::IncompatibleContinuation => f.write_str(
+                "continuation is incompatible with this scope, adapter, or agent version",
+            ),
+            Self::UnsafeHandoff => {
+                f.write_str("session has unfinished or uncertain work and cannot be handed off")
+            }
+            Self::Store(error) => error.fmt(f),
             Self::Protocol(error) => write!(f, "ACP connection failed: {error}"),
             Self::Task(error) => write!(f, "ACP connection task failed: {error}"),
         }
@@ -136,6 +174,7 @@ impl Error for AcpError {
         match self {
             Self::Protocol(error) => Some(error),
             Self::Task(error) => Some(error),
+            Self::Store(error) => Some(error),
             _ => None,
         }
     }
@@ -154,10 +193,14 @@ pub struct AcpConnection {
     connection: ConnectionTo<Agent>,
     routes: Arc<Mutex<session::Routes>>,
     closed: watch::Receiver<bool>,
+    continuation_scope: Option<String>,
+    session_timeout: Duration,
 }
 
 impl AcpConnection {
     pub async fn connect(launch: AcpLaunch) -> Result<Self, AcpError> {
+        let continuation_scope = launch.continuation_scope.clone();
+        let session_timeout = launch.session_timeout;
         let (ready_tx, ready_rx) = oneshot::channel();
         let (stop_tx, stop_rx) = oneshot::channel();
         let (closed_tx, closed_rx) = watch::channel(false);
@@ -226,6 +269,8 @@ impl AcpConnection {
             connection,
             routes,
             closed: closed_rx,
+            continuation_scope,
+            session_timeout,
         })
     }
 

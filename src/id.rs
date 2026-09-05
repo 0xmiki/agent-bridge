@@ -57,6 +57,10 @@ identifier!(SlotId, "Identity of configured compute capacity.");
 identifier!(SessionId, "Identity of an application context boundary.");
 identifier!(RunId, "Identity of one execution assignment.");
 identifier!(
+    ContinuationId,
+    "Identity of a single-use provider session handoff."
+);
+identifier!(
     RecordId,
     "Identity of an input, output, or activity record."
 );
