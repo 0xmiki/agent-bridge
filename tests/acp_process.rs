@@ -777,6 +777,287 @@ fn actors() -> RecordActors {
     }
 }
 
+#[cfg(feature = "structured")]
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredCount {
+    count: u32,
+}
+
+#[cfg(feature = "structured")]
+fn count_contract() -> agent_bridge::structured::JsonContract<StructuredCount> {
+    agent_bridge::structured::JsonContract::new(
+        "count",
+        "v1",
+        "Return an object with integer count.",
+        1024,
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "structured")]
+#[tokio::test]
+async fn parseable_json_is_not_accepted_before_a_normal_completion() {
+    let contract = count_contract();
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("json-pending"))
+        .await
+        .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_json_run(
+                RunId::new("cancelled-json").unwrap(),
+                json_task(&contract),
+                &store,
+                actors(),
+            )
+            .unwrap();
+        let mut chunks = 0;
+        while chunks < 2 {
+            if matches!(
+                timeout(Duration::from_secs(3), run.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .expect("fixture must emit both JSON chunks before completion"),
+                AcpEvent::Update(SessionUpdate::AgentMessageChunk(_))
+            ) {
+                chunks += 1;
+            }
+        }
+        assert!(run.result().is_none());
+        run.cancel().unwrap();
+        while timeout(Duration::from_secs(3), run.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_some()
+        {}
+        assert!(matches!(
+            run.result(),
+            Some(Err(agent_bridge::structured::JsonRejection::Incomplete(_)))
+        ));
+        assert_eq!(run.run().status(), RunStatus::Cancelled);
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "structured")]
+fn json_task(
+    contract: &agent_bridge::structured::JsonContract<StructuredCount>,
+) -> agent_bridge::acp::JsonTask<'_, StructuredCount> {
+    agent_bridge::acp::JsonTask {
+        prompt: "Count the items",
+        contract,
+        mode: agent_bridge::acp::JsonOutputMode::ValidateReturnedText,
+    }
+}
+
+#[cfg(feature = "structured")]
+#[tokio::test]
+async fn structured_results_distinguish_validation_from_provider_completion() {
+    use agent_bridge::structured::JsonRejection;
+    for mode in [
+        "json-valid",
+        "chat",
+        "json-ambiguous",
+        "json-image",
+        "json-truncated",
+        "prompt-crash",
+    ] {
+        let contract = count_contract();
+        let store = MemoryStore::default();
+        let connection = AcpConnection::connect(launch(mode)).await.unwrap();
+        {
+            let mut session = new_session(&connection).await;
+            let mut run = session
+                .start_recorded_json_run(
+                    RunId::new("structured").unwrap(),
+                    json_task(&contract),
+                    &store,
+                    actors(),
+                )
+                .unwrap();
+            assert!(run.result().is_none());
+            loop {
+                match timeout(Duration::from_secs(3), run.next()).await.unwrap() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) if mode == "prompt-crash" => break,
+                    Err(error) => panic!("unexpected recording error: {error}"),
+                }
+            }
+            match (mode, run.result().unwrap()) {
+                ("json-valid", Ok(result)) => assert_eq!(result.count, 3),
+                ("chat", Err(JsonRejection::InvalidJson(_))) => {
+                    assert_eq!(run.run().status(), RunStatus::Completed)
+                }
+                ("json-ambiguous", Err(JsonRejection::AmbiguousOutput)) => {}
+                ("json-image", Err(JsonRejection::NonTextOutput)) => {}
+                ("json-truncated" | "prompt-crash", Err(JsonRejection::Incomplete(_))) => {}
+                (_, result) => panic!("unexpected result for {mode}: {result:?}"),
+            }
+        }
+        let _ = connection.shutdown().await;
+        let records = store
+            .list(&SessionId::new("app-session").unwrap(), None, 100)
+            .unwrap();
+        assert!(records.iter().any(|record| matches!(&record.record.payload, Payload::Extension { name, data, .. } if name == "result_validation" && data["native_enforcement"] == false)));
+    }
+}
+
+#[cfg(feature = "structured")]
+#[tokio::test]
+async fn native_structured_enforcement_is_rejected_before_dispatch() {
+    let contract = count_contract();
+    let store = MemoryStore::default();
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let connection = AcpConnection::connect(
+        launch("json-valid").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+    )
+    .await
+    .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut task = json_task(&contract);
+        task.mode = agent_bridge::acp::JsonOutputMode::RequireNativeEnforcement;
+        assert!(matches!(
+            session.start_recorded_json_run(
+                RunId::new("native-required").unwrap(),
+                task,
+                &store,
+                actors()
+            ),
+            Err(RecordingError::NativeStructuredOutputUnsupported)
+        ));
+        assert!(matches!(
+            store.get_run(&RunId::new("native-required").unwrap()),
+            Err(StoreError::MissingRun)
+        ));
+    }
+    connection.shutdown().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("session/prompt")
+    );
+}
+
+#[cfg(all(feature = "structured", feature = "sqlite"))]
+#[tokio::test]
+async fn structured_contract_and_validation_provenance_survive_reopen() {
+    let contract = count_contract().with_validation(|result| {
+        if result.count == 3 {
+            Ok(())
+        } else {
+            Err("wrong count".into())
+        }
+    });
+    let files = TestFiles::new();
+    let database = files.path("json.sqlite3");
+    let store = agent_bridge::records::SqliteStore::open(&database).unwrap();
+    let connection = AcpConnection::connect(launch("json-valid")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_json_run(
+                RunId::new("structured").unwrap(),
+                json_task(&contract),
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while timeout(Duration::from_secs(3), run.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_some()
+        {}
+        assert_eq!(run.into_result().unwrap().unwrap().count, 3);
+    }
+    connection.shutdown().await.unwrap();
+    drop(store);
+    let store = agent_bridge::records::SqliteStore::open(database).unwrap();
+    let records = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    let evidence = records
+        .iter()
+        .find_map(|record| match &record.record.payload {
+            Payload::Extension { name, data, .. } if name == "result_validation" => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(evidence["validation"]["status"], "valid");
+    assert_eq!(evidence["contract"]["revision"], "v1");
+    assert_eq!(evidence["sources"].as_array().unwrap().len(), 1);
+    let source = store
+        .get(&agent_bridge::RecordId::new(evidence["sources"][0]["id"].as_str().unwrap()).unwrap())
+        .unwrap();
+    assert_eq!(
+        source.revision,
+        evidence["sources"][0]["revision"].as_u64().unwrap()
+    );
+    assert_eq!(source.state, RecordState::Complete);
+    assert!(
+        matches!(&source.record.payload, Payload::Message { kind:MessageKind::Agent, message } if message.content == vec![Content::Text("{\"count\":3}".into())])
+    );
+    assert!(records.iter().any(|record| matches!(&record.record.payload, Payload::Extension { name, data, .. } if name == "result_contract" && data["application_validation"] == true && data["native_enforcement"] == false)));
+}
+
+#[cfg(all(feature = "structured", feature = "sqlite"))]
+#[tokio::test]
+async fn structured_evidence_failures_block_dispatch_or_hide_unpersisted_success() {
+    for stage in ["result_contract", "result_validation"] {
+        let files = TestFiles::new();
+        let database = files.path("json-failure.sqlite3");
+        let log = files.path("messages");
+        let store = agent_bridge::records::SqliteStore::open(&database).unwrap();
+        let sql = rusqlite::Connection::open(&database).unwrap();
+        sql.execute_batch(&format!("CREATE TRIGGER fail_result BEFORE INSERT ON agent_bridge_records WHEN NEW.payload_json LIKE '%\"name\":\"{stage}\"%' BEGIN SELECT RAISE(ABORT, 'test validation persistence failure'); END;")).unwrap();
+        let contract = count_contract();
+        let connection = AcpConnection::connect(
+            launch("json-valid").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+        )
+        .await
+        .unwrap();
+        {
+            let mut session = new_session(&connection).await;
+            let result = session.start_recorded_json_run(
+                RunId::new("structured").unwrap(),
+                json_task(&contract),
+                &store,
+                actors(),
+            );
+            if stage == "result_contract" {
+                assert!(matches!(result, Err(RecordingError::Store(_))));
+            } else {
+                let mut run = result.unwrap();
+                loop {
+                    match timeout(Duration::from_secs(3), run.next()).await.unwrap() {
+                        Ok(Some(_)) => {}
+                        Err(RecordingError::Store(_)) => break,
+                        other => panic!("expected validation persistence failure: {other:?}"),
+                    }
+                }
+                assert_eq!(run.run().status(), RunStatus::Completed);
+                assert!(run.result().is_none());
+                assert!(matches!(run.next().await, Err(RecordingError::Closed)));
+            }
+        }
+        connection.shutdown().await.unwrap();
+        if stage == "result_contract" {
+            assert!(
+                !std::fs::read_to_string(log)
+                    .unwrap()
+                    .contains("session/prompt")
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn restoration_reports_preserve_explicit_instruction_omissions() {
     use agent_bridge::context::{ContextItem, ContextOmission};

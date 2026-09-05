@@ -12,6 +12,10 @@ mod context;
 pub use context::{ContextMode, ContextTask, TextContextMode};
 mod continuation;
 mod recording;
+#[cfg(feature = "structured")]
+mod structured;
+#[cfg(feature = "structured")]
+pub use structured::{JsonOutputMode, JsonTask, RecordedJsonRun};
 mod restoration;
 pub use restoration::{PortableRestore, RestorationPolicy, RestoredSession};
 mod session;

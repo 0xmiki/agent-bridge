@@ -203,4 +203,5 @@ example validates the answer independently of input-delivery evidence. Claude
 verification remains deferred. [Restoration policy](restoration.md) now makes native
 resume and portable selection explicit. [Instruction grants and omission policies](context-policy.md)
 now govern declared instruction changes and excluded selections. Native base
-replacement remains unsupported; skills and structured-result validation remain M3 work.
+replacement remains unsupported. [Structured-result validation](structured-results.md)
+now supports typed background tasks; versioned skills remain M3 work.

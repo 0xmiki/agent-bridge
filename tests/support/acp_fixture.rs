@@ -91,6 +91,7 @@ fn main() {
     ]
     .contains(&mode.as_str())
         || mode.starts_with("config")
+        || mode.starts_with("json-")
     {
         serve_sessions(&mode, &mut input);
     } else {
@@ -237,6 +238,24 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                     "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"fixture prompt error\"}}}}"
                 );
                 io::stdout().flush().unwrap();
+                continue;
+            }
+            if mode.starts_with("json-") {
+                update(session, r#"{"sessionUpdate":"agent_thought_chunk","messageId":"thinking","content":{"type":"text","text":"not a result"}}"#);
+                update(session, r#"{"sessionUpdate":"agent_message_chunk","messageId":"json","content":{"type":"text","text":"{\"count\":"}}"#);
+                update(session, r#"{"sessionUpdate":"agent_message_chunk","messageId":"json","content":{"type":"text","text":"3}"}}"#);
+                if mode == "json-pending" {
+                    pending.insert(session.to_owned(), (id.to_owned(), 0, false));
+                    continue;
+                }
+                if mode == "json-ambiguous" {
+                    update(session, r#"{"sessionUpdate":"agent_message_chunk","messageId":"another","content":{"type":"text","text":"{\"count\":3}"}}"#);
+                }
+                if mode == "json-image" {
+                    update(session, r#"{"sessionUpdate":"agent_message_chunk","messageId":"image","content":{"type":"image","data":"YWJj","mimeType":"image/png"}}"#);
+                }
+                let reason = if mode == "json-truncated" { "max_tokens" } else { "end_turn" };
+                reply(id, &format!("{{\"stopReason\":\"{reason}\"}}"));
                 continue;
             }
             update(

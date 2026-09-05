@@ -32,6 +32,8 @@ each saved transcript. Support still depends on the selected provider model.
 new provider session with selected portable context, and retain a report of that choice.
 [Context policies](docs/context-policy.md) authorize exact instruction revisions
 and record explicit omissions without silently skipping missing inputs.
+The optional [structured-result API](docs/structured-results.md) validates typed
+JSON and application rules, with persisted evidence separate from run completion.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared

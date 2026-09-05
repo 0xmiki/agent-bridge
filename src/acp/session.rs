@@ -473,7 +473,7 @@ impl<'connection> AcpSession<'connection> {
         self.dispatch(spec, text.into())
     }
 
-    fn run_spec(&self, id: RunId) -> Result<RunSpec, AcpError> {
+    pub(super) fn run_spec(&self, id: RunId) -> Result<RunSpec, AcpError> {
         Ok(RunSpec {
             id,
             session_id: self.session_id.clone(),
@@ -484,7 +484,7 @@ impl<'connection> AcpSession<'connection> {
         })
     }
 
-    fn dispatch(
+    pub(super) fn dispatch(
         &mut self,
         spec: RunSpec,
         text: String,

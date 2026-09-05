@@ -36,6 +36,8 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   portable selection have distinct setup and first-run behavior.
 - Instruction grants and omission policies add six tests, for 145 total. Both
   OpenCode and Codex passed the two-revision supplemental-guidance example.
+- Structured-result validation adds seven tests, for 152 total. OpenCode and Codex
+  passed the typed background-task example with persisted validation evidence.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -182,8 +184,13 @@ Receipts preserve requested/effective selection and explicit omission reasons.
 The supported change mechanism is supplemental user-level guidance; native base
 instruction replacement remains an explicit capability error.
 
-Next slice: structured-result validation and a runnable background-task example.
-Versioned skills and their fallback policy are the final remaining M3 item afterward.
+The sixth increment adds [structured results](docs/structured-results.md): typed
+JSON deserialization, optional application rules, explicit rejection of required
+native enforcement, and contract/validation receipts. A completed run is not
+automatically a valid result. The background example passed with OpenCode and Codex.
+
+Next slice: versioned skills and explicit fallback behavior, the final remaining
+M3 checklist item. Then review the examples against the milestone's completion gate.
 
 - [x] Resolve explicit context manifests from stored records and resources.
 - [x] Record what the bridge supplied, including instruction revisions and omissions.
@@ -191,7 +198,7 @@ Versioned skills and their fallback policy are the final remaining M3 item after
 - [x] Support instruction changes with explicit authority and capability requirements.
 - [x] Add resource storage and image input without repeatedly copying large assets.
 - [x] Define explicit native-resume versus portable-context restoration policies.
-- [ ] Add structured-result validation; distinguish native enforcement from validation
+- [x] Add structured-result validation; distinguish native enforcement from validation
   of unconstrained output.
 - [ ] Represent skills as versioned inputs where supported, distinguishing availability
   from observed activation. Define the fallback policy where native skills are absent.

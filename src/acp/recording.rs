@@ -25,6 +25,7 @@ pub struct RecordActors {
 
 #[derive(Debug)]
 pub enum RecordingError {
+    NativeStructuredOutputUnsupported,
     Context(crate::context::ContextError),
     UnsupportedContext(&'static str),
     Store(StoreError),
@@ -37,6 +38,9 @@ pub enum RecordingError {
 impl fmt::Display for RecordingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NativeStructuredOutputUnsupported => {
+                f.write_str("this ACP driver cannot guarantee native structured-output enforcement")
+            }
             Self::Context(e) => e.fmt(f),
             Self::UnsupportedContext(message) => f.write_str(message),
             Self::Store(e) => e.fmt(f),
@@ -163,6 +167,26 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             Payload::Extension {
                 namespace: "agent_bridge".into(),
                 name: "restoration".into(),
+                data,
+            },
+            self.actors.host.clone(),
+            None,
+            None,
+            RecordState::Complete,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(feature = "structured")]
+    pub(super) fn result_evidence(
+        &mut self,
+        name: &str,
+        data: serde_json::Value,
+    ) -> Result<(), RecordingError> {
+        self.insert(
+            Payload::Extension {
+                namespace: "agent_bridge".into(),
+                name: name.into(),
                 data,
             },
             self.actors.host.clone(),
@@ -609,6 +633,54 @@ impl<'session, 'connection, 'store, S: RecordStore> RecordedRun<'session, 'conne
     }
     pub fn run(&self) -> &Run {
         self.inner.run()
+    }
+
+    #[cfg(feature = "structured")]
+    pub(super) fn json_candidate(
+        &self,
+    ) -> (
+        serde_json::Value,
+        Result<&str, crate::structured::JsonRejection>,
+    ) {
+        use crate::structured::JsonRejection;
+        let messages: Vec<_> = self
+            .recorder
+            .records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.payload,
+                    Payload::Message {
+                        kind: MessageKind::Agent,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        let sources = serde_json::json!(messages.iter().map(|record| serde_json::json!({"id":record.stored.record.id.as_str(),"revision":record.stored.revision})).collect::<Vec<_>>());
+        let candidate = if self.recorder.records.iter().any(|record| matches!(&record.payload, Payload::Extension { namespace, name, .. } if namespace == "acp" && name == "message_content")) {
+            Err(JsonRejection::NonTextOutput)
+        } else {
+            match messages.as_slice() {
+                [] => Err(JsonRejection::MissingOutput),
+                [record] if record.stored.state == RecordState::Complete => match &record.payload {
+                    Payload::Message { message, .. } => match message.content.as_slice() {
+                        [Content::Text(text)] => Ok(text.as_str()), _ => Err(JsonRejection::NonTextOutput),
+                    }, _ => unreachable!(),
+                },
+                [_] => Err(JsonRejection::Incomplete("output record is not complete".into())),
+                _ => Err(JsonRejection::AmbiguousOutput),
+            }
+        };
+        (sources, candidate)
+    }
+
+    #[cfg(feature = "structured")]
+    pub(super) fn result_evidence(
+        &mut self,
+        data: serde_json::Value,
+    ) -> Result<(), RecordingError> {
+        self.recorder.result_evidence("result_validation", data)
     }
     /// Live payloads with persisted identity/revision. Reading explicitly clones content.
     pub fn snapshot(&self) -> Vec<Snapshot> {

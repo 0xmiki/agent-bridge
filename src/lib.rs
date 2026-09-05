@@ -20,6 +20,9 @@ pub mod records;
 #[cfg(feature = "records")]
 pub mod context;
 
+#[cfg(feature = "structured")]
+pub mod structured;
+
 mod configuration;
 mod id;
 mod model;

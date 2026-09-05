@@ -7,6 +7,7 @@ description = "Connect applications to installed AI agents"
 [features]
 default = []
 records = ["dep:serde_json"]
+structured = ["records", "dep:serde"]
 sqlite = ["records", "dep:rusqlite", "dep:serde", "dep:sha2"]
 acp = ["records", "dep:serde", "dep:agent-client-protocol", "dep:tokio", "dep:base64", "dep:sha2"]
 providers = ["acp", "tokio/process", "tokio/io-util"]
@@ -62,3 +63,7 @@ required-features = ["acp", "sqlite"]
 [[example]]
 name = "acp_transfer"
 required-features = ["acp", "sqlite"]
+
+[[example]]
+name = "acp_background"
+required-features = ["acp", "sqlite", "structured"]
