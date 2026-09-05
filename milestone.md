@@ -23,7 +23,7 @@ Status reviewed September 6, 2026. M0's baseline is `10b9113`; M1 evidence is li
 
 - M0 and M1 are complete. M2 is accepted for OpenCode and Codex, with Claude's
   authenticated workflows deferred at the user's request.
-- **M3 is complete within the documented ACP scope. M4, tools and composition, is next.**
+- **M3 is complete within the documented ACP scope. M4, tools and composition, is in progress.**
 - The M2 provider increment passes 118 tests, Clippy, documentation generation,
   and separate core, records, ACP, SQLite, and providers feature builds.
 - The first M3 increment passes 125 Rust tests, Clippy, documentation generation,
@@ -40,6 +40,8 @@ Status reviewed September 6, 2026. M0's baseline is `10b9113`; M1 evidence is li
   passed the typed background-task example with persisted validation evidence.
 - Versioned skill inputs add four tests, for 156 total. Both providers passed
   explicit skill-text fallback; native skill registration/activation remains unverified.
+- M4's typed tool registry and MCP adapter add five tests, for 161 total. Both
+  providers passed a real call to the Rust application-tool server.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -58,7 +60,7 @@ been released. M8 defines the first release gate.
 | M1 | Model selection and attributable run configuration | Complete | M0 |
 | M2 | Verified multi-provider integration and setup | Accepted with Claude verification deferred | M1 |
 | M3 | Explicit context, instructions, and rich tasks | Complete | M2 |
-| M4 | Application tools, authority, and execution composition | Planned | M3 |
+| M4 | Application tools, authority, and execution composition | In progress | M3 |
 | M5 | Durable execution bookkeeping and bounded recovery | Planned | M4 |
 | M6 | TypeScript SDK, subprocess host, and Tauri plugin | Planned | M5 |
 | M7 | Real application migrations | Planned | M6 |
@@ -229,9 +231,18 @@ The next implementation target is M4's application-tool contract and MCP integra
 
 ## M4 — Tools, authority, and composition
 
-- [ ] Make existing MCP attachment convenient and verify real app-tool round trips.
-- [ ] Add typed application-tool registration and the required MCP bridge.
-- [ ] Separate tool declarations, execution grants, and user permission decisions.
+First increment: [typed application tools](docs/application-tools.md), asynchronous
+handlers, generated input schemas, exact-revision grants bound to a participant,
+session, and slot, and an MCP server built on the official Rust SDK. The
+[application tool example](examples/application_tools.rs) passed with OpenCode and
+Codex. Cancellation is cooperative; host execution durability is not claimed.
+
+Next slice: structured questions and answers, followed by execution relationships,
+child authority, concurrency/delegation limits, and application-defined routing.
+
+- [x] Make existing MCP attachment convenient and verify real app-tool round trips.
+- [x] Add typed application-tool registration and the required MCP bridge.
+- [x] Separate tool declarations, execution grants, and user permission decisions.
 - [ ] Preserve structured questions and answers alongside permission interactions.
 - [ ] Support execution relationships and explicit child context/authority selection.
 - [ ] Represent provider-managed subagent activity without inventing unavailable control.

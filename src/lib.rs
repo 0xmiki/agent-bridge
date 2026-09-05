@@ -5,6 +5,8 @@
 //! feature adds portable transcripts and an in-memory store. The optional `sqlite`
 //! feature persists records and single-use continuation handles across restarts.
 //! The optional `providers` feature adds installed-provider discovery and drivers.
+//! `tools` adds typed application handlers and scoped grants; `mcp` serves them
+//! through a host-bound MCP adapter.
 //! Provider execution recovery is still separate work.
 //! Public types remain provisional.
 
@@ -22,6 +24,11 @@ pub mod context;
 
 #[cfg(feature = "structured")]
 pub mod structured;
+
+#[cfg(feature = "mcp")]
+pub mod mcp;
+#[cfg(feature = "tools")]
+pub mod tools;
 
 mod configuration;
 mod id;

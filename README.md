@@ -36,6 +36,8 @@ The optional [structured-result API](docs/structured-results.md) validates typed
 JSON and application rules, with persisted evidence separate from run completion.
 [Versioned skill inputs](docs/skills.md) support explicit text fallback or omission,
 without equating document delivery with native activation.
+[Application tools](docs/application-tools.md) add typed asynchronous handlers,
+session/slot grants, and a host-bound MCP server.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared
