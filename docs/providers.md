@@ -124,4 +124,7 @@ variables extend the probe to session creation and a real text run. See the
 Fixture tests cover shared launch/session behavior, structured authentication and
 protocol errors, discovery, scope isolation, and runtime checks. They do not prove
 vendor tools, cancellation, model switching, or continuation interoperability.
-Those real workflow checks remain part of M2.
+The opt-in `provider_compat` example now checks those workflows against real
+providers. OpenCode and Codex have passed tool, cancellation, model-continuity,
+and native-resume checks. The evidence table records permission checks separately;
+Claude's generation checks still need local authentication. M2 remains open.

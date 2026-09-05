@@ -44,3 +44,7 @@ required-features = ["acp", "sqlite"]
 [[example]]
 name = "providers"
 required-features = ["providers"]
+
+[[example]]
+name = "provider_compat"
+required-features = ["providers", "sqlite"]

@@ -30,8 +30,9 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   with persisted per-run settings.
 - The shared provider example completes real text prompts with OpenCode and Codex.
   Claude opens a session but requires local authentication at prompt dispatch.
-- The full multi-provider workflow suite, TypeScript, Tauri integration, and app
-  migrations remain unfinished.
+- OpenCode and Codex also pass the shared tool, permission, cancellation,
+  model-switching, and native-resume checks. Claude's workflow verification,
+  TypeScript, Tauri integration, and app migrations remain unfinished.
 
 The crate's `0.1.0` version is scaffold metadata, not evidence that an alpha has
 been released. M8 defines the first release gate.
@@ -122,10 +123,18 @@ connected, and authentication evidence stay distinct. Compatibility checks cover
 protocol negotiation and Claude JavaScript's declared Node minimum, not a blanket
 adapter-version allowlist.
 
-Next M2 slice: extend the common real-provider suite to tools, permissions,
-cancellation, model changes, and native continuation. Claude's generation checks
-need supported local authentication. M2 remains in progress until the common
-workflow evidence satisfies the completion criterion below.
+The next increment adds the [shared workflow runner](examples/provider_compat.rs)
+and an MCP fixture with its own subprocess test. OpenCode and Codex pass actual
+MCP token round trips, cancellation during a running tool, two-model context
+continuity, and native resume through the same runner. Permission checks distinguish
+automatic execution from client approval and dismissal. See the evidence table
+for exact setup and results.
+
+Remaining M2 work: finish the same suite with authenticated Claude, resolve any
+provider gaps it exposes, and review the complete compatibility table against this
+milestone's acceptance criteria. Claude's first tool prompt still returns structured
+authentication-required. M2 remains in progress; this does not advance the default
+target to M3.
 
 Done when the same example and application-facing contract work across all three
 providers for their declared common capabilities. A provider-specific implementation

@@ -44,9 +44,11 @@ use tools.` All three use the same `providers` example and `AcpDriver`.
 | Session creation and configuration report | Passed | Passed | Passed |
 | Text prompt | Passed | Passed | Authentication required |
 | Reported model selection | opencode/big-pickle | gpt-6-astra | default |
-| Real two-model context continuity | Passed in M1 | Not tested | Not tested |
-| Native resume | Passed in M0 | Not tested | Not tested |
-| Real tool/permission/cancellation suite | Not tested | Not tested | Not tested |
+| Real two-model context continuity | Passed | Passed | Blocked by authentication |
+| Native resume | Passed | Passed | Blocked by authentication |
+| MCP tool result and streamed tool events | Passed | Passed | Blocked by authentication |
+| Cancellation during a running MCP tool | Passed | Passed | Blocked by authentication |
+| Client permission approval and dismissal | Passed | Passed | Blocked by authentication |
 
 Codex used local codex-cli 0.153.4 via the explicit override. Claude used the
 adapter's Claude Agent SDK 0.3.257. Claude returned ACP's structured authentication
@@ -58,8 +60,94 @@ OpenCode and Claude also advertised SSE MCP; Codex did not. These declarations a
 not workflow verification. Model names are provider-reported configuration, not
 independent model identity attestation.
 
-The earlier OpenCode model/resume checks use the ACP examples documented in
+The shared workflow runner now verifies OpenCode and Codex model continuity and
+native resume, in addition to the earlier OpenCode checks in
 [configuration](../../docs/configuration.md) and
-[continuations](../../docs/continuations.md). The full common real-provider suite
-is still pending. Claude needs supported local authentication before its
-generation-dependent checks can run. Extend this evidence as M2 proceeds.
+[continuations](../../docs/continuations.md). Claude also returned authentication
+required when the shared MCP workflow was attempted. Its remaining workflows have
+not run; they require supported local authentication.
+
+## Shared workflow runner
+
+Build with `cargo build --all-features --example provider_compat`. Its arguments are:
+
+```text
+provider_compat <opencode|codex|claude> <check> <absolute-workspace> [absolute-adapter.js]
+```
+
+Use a disposable workspace. Checks send real prompts, use the provider's configured
+account, and keep evidence in a newly created temporary directory printed at startup.
+The runner never installs credentials or changes global provider configuration.
+
+| Check | Required evidence |
+| --- | --- |
+| `tools` | MCP fixture executed, tool events arrived, and the answer exactly matches the generated token. |
+| `permissions` | An offered one-time approval was submitted for the fixture and its returned token matches. |
+| `deny` | A fixture permission request was dismissed, and no fixture tool started. |
+| `cancel` | The wait tool started, the bridge requested cancellation, and both native stop reason and bridge run status confirmed cancellation. |
+| `models` | Two distinct selected models retained a unique phrase in one native session. |
+| `resume` | A new provider process recalled the phrase after a single-use native handoff and SQLite reopen. |
+
+The MCP fixture supports a token tool and a 30-second wait tool. It keeps a local
+call ledger; the prompt does not contain the expected token. MCP checks require
+`AGENT_BRIDGE_NODE` to name an absolute Node executable. Model checks require
+`AGENT_BRIDGE_MODEL_A` and `AGENT_BRIDGE_MODEL_B`. The tested pairs were
+`opencode/big-pickle` to `opencode/mimo-v2.5-free`, and `gpt-6-astra` to `gpt-5.6-luna`.
+
+For example, from the repository root:
+
+```sh
+AGENT_BRIDGE_NODE="$(command -v node)" \
+  target/debug/examples/provider_compat opencode tools /absolute/disposable-workspace
+
+AGENT_BRIDGE_MODEL_A=gpt-6-astra AGENT_BRIDGE_MODEL_B=gpt-5.6-luna \
+  target/debug/examples/provider_compat codex models /absolute/disposable-workspace \
+  "$PWD/verification/adapters/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
+```
+
+### Permission setup and interpretation
+
+The default settings used here approved MCP tools automatically. Zero permission
+requests do not pass the `permissions` or `deny` checks.
+
+For OpenCode, run either check with the process-local
+`OPENCODE_CONFIG_CONTENT='{"permission":{"*":"ask"}}'` override. This uses its
+documented [permission rules](https://opencode.ai/docs/permissions/) and
+[inline configuration](https://opencode.ai/docs/config/).
+
+For Codex, the runner's permission checks set up this fixture through the adapter's
+`CODEX_CONFIG` override, with `default_tools_approval_mode: "prompt"`, and select the
+advertised `read-only` mode so the client receives requests instead of automatic
+review. Existing native configuration is preserved except for the fixture's own
+server entry. See [Codex MCP configuration](https://developers.openai.com/codex/config-reference).
+ACP's MCP attachment fields have no approval-policy setting, so this native setup
+is confined to verification. Ordinary tool and cancellation checks use ACP attachment.
+Application authority configuration remains M4 work.
+
+Permission subjects can be partial tool updates. The runner correlates their IDs
+with earlier tool titles, which Codex needs. It approves only offered `AllowOnce`
+options for the named fixture tools and dismisses other requests. This title-based
+fixture policy is not an application authorization boundary.
+
+### Limits
+
+Every prompt has a 90-second timeout and failures exit nonzero. Successful workflows
+write `result.json`; completed MCP observations also write it when their evidence
+falls short. Errors before observation completes can leave only partial evidence.
+Native resume keeps its SQLite file for inspection. Inspect the process exit status
+as well as any result file, since shutdown can fail after workflow success.
+
+Cancellation establishes the provider's acknowledgement while a tool was running.
+It does not prove that every external tool side effect can be stopped or undone.
+The ledger distinguishes a cancelled pending timer from a cancellation notification
+received after a tool already finished. Native session load, images, HTTP/SSE MCP,
+and provider-managed subagents are not covered by these checks.
+
+Test the fixture without any provider or network access:
+
+```sh
+node --test verification/adapters/probe-tools.test.mjs
+```
+
+The test verifies token/ledger agreement, pending-tool cancellation, clean exit,
+and unsupported-tool errors. It requires ordinary local subprocess execution.
