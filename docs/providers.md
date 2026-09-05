@@ -127,4 +127,6 @@ vendor tools, cancellation, model switching, or continuation interoperability.
 The opt-in `provider_compat` example now checks those workflows against real
 providers. OpenCode and Codex have passed tool, cancellation, model-continuity,
 and native-resume checks. The evidence table records permission checks separately;
-Claude's generation checks still need local authentication. M2 remains open.
+Claude's generation checks remain deferred because authenticated access is unavailable.
+The user accepted progressing to M3 with OpenCode and Codex verified. Claude's
+workflow support must not be advertised as equivalently verified until its suite runs.

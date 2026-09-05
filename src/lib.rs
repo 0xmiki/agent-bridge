@@ -17,6 +17,9 @@ pub mod providers;
 #[cfg(feature = "records")]
 pub mod records;
 
+#[cfg(feature = "records")]
+pub mod context;
+
 mod configuration;
 mod id;
 mod model;

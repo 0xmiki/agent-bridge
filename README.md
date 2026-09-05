@@ -22,6 +22,10 @@ Model and option changes can be applied between runs. Requested selections and
 provider-reported settings are stored with each run; later configuration reports
 do not rewrite that history. See [configuration](docs/configuration.md).
 
+[Context preparation](docs/context.md) resolves selected immutable records and
+resource revisions while preserving instruction roles. Provider delivery of these
+prepared inputs is the next M3 increment.
+
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared
 ACP driver. See [installed providers](docs/providers.md) for the API and current

@@ -21,10 +21,13 @@ tool use must also work in examples independent of those applications.
 
 Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
 
-- M0 and M1 are complete within the scopes below.
-- **M2 is in progress: provider definitions, setup diagnostics, and compatibility checks.**
+- M0 and M1 are complete. M2 is accepted for OpenCode and Codex, with Claude's
+  authenticated workflows deferred at the user's request.
+- **M3 is in progress: explicit context preparation, instructions, and rich tasks.**
 - The M2 provider increment passes 118 tests, Clippy, documentation generation,
   and separate core, records, ACP, SQLite, and providers feature builds.
+- The first M3 increment passes 125 Rust tests, Clippy, documentation generation,
+  and separate core and records builds.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -41,8 +44,8 @@ been released. M8 defines the first release gate.
 | --- | --- | --- | --- |
 | M0 | Execution and persistence foundation | Complete | — |
 | M1 | Model selection and attributable run configuration | Complete | M0 |
-| M2 | Verified multi-provider integration and setup | In progress | M1 |
-| M3 | Explicit context, instructions, and rich tasks | Planned | M2 |
+| M2 | Verified multi-provider integration and setup | Accepted with Claude verification deferred | M1 |
+| M3 | Explicit context, instructions, and rich tasks | In progress | M2 |
 | M4 | Application tools, authority, and execution composition | Planned | M3 |
 | M5 | Durable execution bookkeeping and bounded recovery | Planned | M4 |
 | M6 | TypeScript SDK, subprocess host, and Tauri plugin | Planned | M5 |
@@ -111,8 +114,10 @@ ownership. Confirmation means provider-reported settings, not model identity att
   version, setup required, and ready states where these can be established.
 - [x] Support explicit executable paths and provider profile scopes.
 - [x] Provide actionable setup guidance using each provider's supported mechanisms.
-- [ ] Run a shared compatibility suite for text, tools, permissions, cancellation,
-  configuration, and advertised continuation behavior.
+- [x] Run the shared compatibility suite for OpenCode and Codex: text, tools,
+  permissions, cancellation, configuration, and advertised native resume.
+- [ ] Deferred: run authenticated Claude workflows before advertising equivalent
+  verified support for Claude.
 - [x] Publish tested versions and limitations, separating advertised from verified support.
 
 First increment: [provider API](docs/providers.md), [implementation](src/providers.rs),
@@ -130,19 +135,26 @@ continuity, and native resume through the same runner. Permission checks disting
 automatic execution from client approval and dismissal. See the evidence table
 for exact setup and results.
 
-Remaining M2 work: finish the same suite with authenticated Claude, resolve any
-provider gaps it exposes, and review the complete compatibility table against this
-milestone's acceptance criteria. Claude's first tool prompt still returns structured
-authentication-required. M2 remains in progress; this does not advance the default
-target to M3.
-
-Done when the same example and application-facing contract work across all three
-providers for their declared common capabilities. A provider-specific implementation
-is added only for a demonstrated gap; it must satisfy that same contract.
+Accepted for progression with OpenCode and Codex verified through the same example
+and application-facing contract. The user does not have Claude access and explicitly
+approved moving on. Claude's generation workflows remain unverified, not passed;
+discovery, initialization, and authentication-required diagnostics have evidence.
+Its deferred suite is required before claiming the same verified workflow support.
+This changes M2's progression gate, not the compatibility evidence or release claims.
 
 ## M3 — Context, instructions, and rich tasks
 
-- [ ] Resolve explicit context manifests from stored records and resources.
+First increment: [context preparation](docs/context.md) resolves selected immutable
+history and exact resource revisions, preserves instruction roles, and rejects
+unavailable inputs without dispatch. Memory resource storage is replaceable and
+shares resource bytes across references. Provider delivery, durable input receipts,
+resource persistence, and restoration policy remain work for subsequent increments.
+
+Next slice: define capability-aware delivery of prepared inputs and a persisted
+receipt that distinguishes prepared, supplied, omitted, and unknown delivery states.
+Do not silently flatten required base instructions into user text.
+
+- [x] Resolve explicit context manifests from stored records and resources.
 - [ ] Record what the bridge supplied, including instruction revisions and omissions.
 - [ ] Keep instructions, conversation history, and provider continuation distinct.
 - [ ] Support instruction changes with explicit authority and capability requirements.
@@ -253,6 +265,10 @@ of every CLI, a workflow DSL, and a universal chat UI are outside the alpha targ
 The extension boundaries should leave room for them without requiring them now.
 
 ## Plan changes
+
+- September 5, 2026: user approved progressing without Claude access. M2 is accepted
+  for the verified OpenCode/Codex scope; authenticated Claude workflows remain an
+  explicit deferred obligation before equivalent support claims. M3 now starts.
 
 - September 5, 2026: established this roadmap from shipped commits and the agreed
   philosophy. Configuration and provider compatibility come before the application

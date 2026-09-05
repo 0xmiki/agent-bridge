@@ -65,7 +65,9 @@ native resume, in addition to the earlier OpenCode checks in
 [configuration](../../docs/configuration.md) and
 [continuations](../../docs/continuations.md). Claude also returned authentication
 required when the shared MCP workflow was attempted. Its remaining workflows have
-not run; they require supported local authentication.
+not run; they require supported local authentication. The user approved deferring
+these checks and moving to M3 because Claude access is unavailable. This is a
+verification gap, not a passing result or a claim of equal provider support.
 
 ## Shared workflow runner
 
