@@ -1,5 +1,9 @@
 # Provider continuations
 
+For the explicit choice between native resume and selected portable context, see
+[restoration policies](restoration.md). Native failure never triggers an automatic
+portable fallback.
+
 Working implementation, not a general recovery system. A continuation is a
 single-use handoff for provider-owned context. It complements portable records;
 it does not replace them or turn hidden provider state into interchangeable data.

@@ -331,7 +331,6 @@ impl<'connection> AcpSession<'connection> {
         if self.connection.is_closed() {
             return Err(AcpError::Closed.into());
         }
-        let mut spec = self.run_spec(id)?;
         let context = crate::context::prepare(
             task.manifest,
             store,
@@ -339,8 +338,44 @@ impl<'connection> AcpSession<'connection> {
             std::slice::from_ref(&self.session_id),
             task.limits,
         )?;
+        self.start_prepared_context_run(
+            id,
+            super::restoration::PreparedTask {
+                prompt: task.prompt,
+                context: &context,
+                mode: task.mode,
+                max_prompt_bytes: task.max_prompt_bytes,
+                restoration: None,
+            },
+            store,
+            actors,
+        )
+    }
+
+    pub(super) fn start_prepared_context_run<'session, 'store, S: crate::records::RecordStore>(
+        &'session mut self,
+        id: RunId,
+        task: super::restoration::PreparedTask<'_>,
+        store: &'store S,
+        actors: super::RecordActors,
+    ) -> Result<super::RecordedRun<'session, 'connection, 'store, S>, super::RecordingError> {
+        if task.prompt.trim().is_empty() {
+            return Err(AcpError::EmptyPrompt.into());
+        }
+        if self.retired || !self.quiescent {
+            return Err(AcpError::SessionUnavailable.into());
+        }
+        if self.connection.is_closed() {
+            return Err(AcpError::Closed.into());
+        }
+        let mut spec = self.run_spec(id)?;
+        for selected in &task.context.records {
+            if *store.get(&selected.record.id)? != **selected {
+                return Err(crate::records::StoreError::RevisionConflict.into());
+            }
+        }
         let (wire, blocks, receipt) = super::context::encode(
-            &context,
+            task.context,
             task.prompt,
             task.max_prompt_bytes,
             matches!(task.mode, super::ContextMode::AppendImagesToNative),
@@ -350,10 +385,13 @@ impl<'connection> AcpSession<'connection> {
                 .prompt_capabilities
                 .image,
         )?;
-        spec.context = context.manifest;
+        spec.context = task.context.manifest.clone();
         let mut recorder =
             super::recording::Recorder::new(store, spec.clone(), task.prompt, actors)?;
         recorder.prepare_input(receipt)?;
+        if let Some(report) = task.restoration {
+            recorder.restoration(report)?;
+        }
         recorder.input_dispatch_attempted()?;
         match self.dispatch_blocks(spec, wire, blocks) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
@@ -373,7 +411,17 @@ impl<'connection> AcpSession<'connection> {
         store: &'store S,
         actors: super::RecordActors,
     ) -> Result<super::RecordedRun<'session, 'connection, 'store, S>, super::RecordingError> {
-        let text = text.into();
+        self.start_recorded_with_report(id, text.into(), store, actors, None)
+    }
+
+    pub(super) fn start_recorded_with_report<'session, 'store, S: crate::records::RecordStore>(
+        &'session mut self,
+        id: RunId,
+        text: String,
+        store: &'store S,
+        actors: super::RecordActors,
+        report: Option<serde_json::Value>,
+    ) -> Result<super::RecordedRun<'session, 'connection, 'store, S>, super::RecordingError> {
         if text.trim().is_empty() {
             return Err(AcpError::EmptyPrompt.into());
         }
@@ -385,6 +433,9 @@ impl<'connection> AcpSession<'connection> {
         }
         let spec = self.run_spec(id)?;
         let mut recorder = super::recording::Recorder::new(store, spec.clone(), &text, actors)?;
+        if let Some(report) = report {
+            recorder.restoration(report)?;
+        }
         match self.dispatch(spec, text) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
             Err(error) => {

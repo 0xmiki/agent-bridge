@@ -158,6 +158,21 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
         Ok(())
     }
 
+    pub(super) fn restoration(&mut self, data: serde_json::Value) -> Result<(), RecordingError> {
+        self.insert(
+            Payload::Extension {
+                namespace: "agent_bridge".into(),
+                name: "restoration".into(),
+                data,
+            },
+            self.actors.host.clone(),
+            None,
+            None,
+            RecordState::Complete,
+        )?;
+        Ok(())
+    }
+
     fn input_evidence(&mut self, data: serde_json::Value) -> Result<(), RecordingError> {
         self.insert(
             Payload::Extension {

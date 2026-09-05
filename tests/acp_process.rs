@@ -777,6 +777,340 @@ fn actors() -> RecordActors {
     }
 }
 
+fn portable_policy(
+    manifest: agent_bridge::ContextManifest,
+) -> agent_bridge::acp::RestorationPolicy {
+    agent_bridge::acp::RestorationPolicy::Portable(agent_bridge::acp::PortableRestore {
+        session_id: SessionId::new("app-session").unwrap(),
+        slot_id: SlotId::new("new-slot").unwrap(),
+        cwd: std::env::current_dir().unwrap(),
+        manifest,
+        limits: agent_bridge::context::ContextLimits {
+            max_items: 20,
+            max_resource_bytes: 1024,
+        },
+        max_prompt_bytes: 8192,
+        mode: agent_bridge::acp::ContextMode::AppendToNative,
+    })
+}
+
+fn restoration_history(store: &impl RecordStore, text: &str) -> agent_bridge::RecordId {
+    store
+        .create_session(SessionId::new("app-session").unwrap())
+        .unwrap();
+    store
+        .insert(agent_bridge::records::Draft {
+            id: agent_bridge::RecordId::new("chosen").unwrap(),
+            session_id: SessionId::new("app-session").unwrap(),
+            run_id: None,
+            actor: ActorId::new("prior-author").unwrap(),
+            reply_to_id: None,
+            source: None,
+            state: RecordState::Complete,
+            payload: Payload::Message {
+                kind: MessageKind::User,
+                message: agent_bridge::Message {
+                    content: vec![Content::Text(text.into())],
+                },
+            },
+        })
+        .unwrap()
+        .record
+        .id
+        .clone()
+}
+
+#[tokio::test]
+async fn portable_restoration_replays_selection_once_and_preserves_application_identity() {
+    let store = MemoryStore::default();
+    let chosen = restoration_history(&store, "selected-marker");
+    let wrong_store = MemoryStore::default();
+    restoration_history(&wrong_store, "different-marker");
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    let manifest = agent_bridge::ContextManifest {
+        records: vec![chosen],
+        ..Default::default()
+    };
+    {
+        let mut restored = connection
+            .restore(
+                portable_policy(manifest.clone()),
+                &store,
+                &resources,
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored.report()["strategy"], "portable_selection");
+        assert!(
+            restored.report()["not_transferred"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("provider_hidden_state"))
+        );
+        assert!(matches!(
+            restored.start_recorded_run(
+                RunId::new("wrong-store").unwrap(),
+                "Question",
+                &wrong_store,
+                actors()
+            ),
+            Err(RecordingError::Store(StoreError::RevisionConflict))
+        ));
+        assert!(matches!(
+            restored.start_recorded_run(
+                RunId::new("oversized").unwrap(),
+                "x".repeat(9000),
+                &store,
+                actors()
+            ),
+            Err(RecordingError::UnsupportedContext(_))
+        ));
+        {
+            let mut run = restored
+                .start_recorded_run(RunId::new("first").unwrap(), "Question", &store, actors())
+                .unwrap();
+            assert_eq!(run.run().spec().context, manifest);
+            assert_eq!(run.run().spec().slot_id.as_str(), "new-slot");
+            assert!(run.run().spec().continuation.is_none());
+            while recorded_next(&mut run).await.is_some() {}
+        }
+        let mut run = restored
+            .start_recorded_run(RunId::new("second").unwrap(), "Follow up", &store, actors())
+            .unwrap();
+        assert_eq!(run.run().spec().context, Default::default());
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    let messages = std::fs::read_to_string(log).unwrap();
+    let prompts: Vec<serde_json::Value> = messages
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|message| message["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert!(
+        prompts[0]["params"]["prompt"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("selected-marker")
+    );
+    assert_eq!(prompts[1]["params"]["prompt"][0]["text"], "Follow up");
+    assert!(!messages.contains("session/resume"));
+    let records = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    assert_eq!(records.iter().filter(|r| matches!(&r.record.payload, Payload::Extension { name, .. } if name == "restoration")).count(), 1);
+}
+
+#[tokio::test]
+async fn native_restoration_does_not_replay_or_fall_back_to_new_session() {
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let source = AcpConnection::connect(launch("chat").continuation_scope("profile"))
+        .await
+        .unwrap();
+    let id = ContinuationId::new("restore-native").unwrap();
+    new_session(&source)
+        .await
+        .handoff(id.clone(), &store)
+        .unwrap();
+    source.shutdown().await.unwrap();
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let wrong = AcpConnection::connect(
+        launch("chat")
+            .continuation_scope("other-profile")
+            .env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wrong
+            .restore(
+                agent_bridge::acp::RestorationPolicy::Native {
+                    continuation: id.clone()
+                },
+                &store,
+                &resources,
+                vec![]
+            )
+            .await,
+        Err(RecordingError::Agent(AcpError::IncompatibleContinuation))
+    ));
+    wrong.shutdown().await.unwrap();
+    assert_eq!(
+        store.get_continuation(&id).unwrap().state,
+        ContinuationState::Available
+    );
+    assert!(
+        !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("session/new")
+    );
+    let connection = AcpConnection::connect(
+        launch("chat")
+            .continuation_scope("profile")
+            .env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+    )
+    .await
+    .unwrap();
+    {
+        let mut restored = connection
+            .restore(
+                agent_bridge::acp::RestorationPolicy::Native {
+                    continuation: id.clone(),
+                },
+                &store,
+                &resources,
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored.report()["native_context"], "reused_uninspected");
+        assert!(
+            !std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("session/prompt")
+        );
+        let mut run = restored
+            .start_recorded_run(
+                RunId::new("native-first").unwrap(),
+                "Follow up",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        assert_eq!(run.run().spec().continuation, Some(id));
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    let messages = std::fs::read_to_string(log).unwrap();
+    assert!(!messages.contains("session/new"));
+    assert_eq!(
+        messages
+            .lines()
+            .filter(|line| line.contains("session/resume"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages
+            .lines()
+            .filter(|line| line.contains("session/prompt"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn portable_restoration_rejects_unavailable_inputs_before_native_setup() {
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    std::fs::write(&log, "").unwrap();
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    let reference = agent_bridge::ResourceRef {
+        id: agent_bridge::ResourceId::new("instructions").unwrap(),
+        revision: "v1".into(),
+    };
+    let manifest = agent_bridge::ContextManifest {
+        instructions: vec![agent_bridge::InstructionRef {
+            resource: reference.clone(),
+            role: agent_bridge::InstructionRole::Base,
+        }],
+        ..Default::default()
+    };
+    assert!(matches!(
+        connection
+            .restore(
+                portable_policy(manifest.clone()),
+                &store,
+                &resources,
+                vec![]
+            )
+            .await,
+        Err(RecordingError::Context(_))
+    ));
+    resources
+        .put(agent_bridge::context::Resource {
+            reference,
+            media_type: "text/plain".into(),
+            bytes: std::sync::Arc::from(b"required base".as_slice()),
+        })
+        .unwrap();
+    assert!(matches!(
+        connection
+            .restore(portable_policy(manifest), &store, &resources, vec![])
+            .await,
+        Err(RecordingError::UnsupportedContext(_))
+    ));
+    connection.shutdown().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("session/new")
+    );
+}
+
+#[tokio::test]
+async fn portable_restoration_cannot_be_bypassed_or_retried_after_abandoning_dispatch() {
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let connection = AcpConnection::connect(launch("cancel")).await.unwrap();
+    let restored = connection
+        .restore(
+            portable_policy(Default::default()),
+            &store,
+            &resources,
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert!(restored.into_session().is_err());
+    {
+        let mut restored = connection
+            .restore(
+                portable_policy(Default::default()),
+                &store,
+                &resources,
+                vec![],
+            )
+            .await
+            .unwrap();
+        drop(
+            restored
+                .start_recorded_run(
+                    RunId::new("abandoned-restore").unwrap(),
+                    "Question",
+                    &store,
+                    actors(),
+                )
+                .unwrap(),
+        );
+        assert!(matches!(
+            restored.start_recorded_run(
+                RunId::new("unsafe-retry").unwrap(),
+                "Retry",
+                &store,
+                actors()
+            ),
+            Err(RecordingError::Agent(AcpError::SessionUnavailable))
+        ));
+    }
+    connection.shutdown().await.unwrap();
+}
+
 fn png_resource() -> agent_bridge::context::Resource {
     use base64::Engine;
     agent_bridge::context::Resource {

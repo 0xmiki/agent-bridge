@@ -58,3 +58,7 @@ required-features = ["acp", "sqlite"]
 [[example]]
 name = "acp_image"
 required-features = ["acp", "sqlite"]
+
+[[example]]
+name = "acp_transfer"
+required-features = ["acp", "sqlite"]

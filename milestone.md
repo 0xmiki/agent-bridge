@@ -32,6 +32,8 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   Real OpenCode and Codex checks retrieved selected history and reopened receipts.
 - Resource retention and image delivery now add six tests, for 135 total. SQLite
   schema version 4 preserves earlier schemas; image receipt data uses version 2.
+- Restoration policies add four workflow tests, for 139 total. Native resume and
+  portable selection have distinct setup and first-run behavior.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -152,7 +154,7 @@ First increment: [context preparation](docs/context.md) resolves selected immuta
 history and exact resource revisions, preserves instruction roles, and rejects
 unavailable inputs without dispatch. Memory resource storage is replaceable and
 shares resource bytes across references. The delivery increment below builds on
-this preparation layer; restoration policy remains open.
+this preparation layer.
 
 The second increment adds explicit ACP text-context delivery and persisted input
 receipts. It rejects unsupported inputs before dispatch and keeps native context
@@ -167,16 +169,20 @@ receipts reference retained bytes by revision and digest instead of copying base
 The [image example](examples/acp_image.rs) passed with Codex and OpenCode's MiMo model;
 OpenCode's default Big Pickle model did not pass. See [context evidence](docs/context.md).
 
-Next slice: explicit native continuation versus portable context restoration policy.
-Base-instruction authority, omission policies, skills, and structured output remain
-later M3 increments.
+The fourth increment adds [explicit restoration policies](docs/restoration.md).
+Native resume never falls back to a fresh session. Portable restoration freezes
+the selected context, requires it on the first run, and records categories of state
+not transferred. Later turns do not replay the selection.
+
+Next slice: instruction-change authority and explicit omission policies. Skills
+and structured output remain later M3 increments.
 
 - [x] Resolve explicit context manifests from stored records and resources.
 - [ ] Record what the bridge supplied, including instruction revisions and omissions.
-- [ ] Keep instructions, conversation history, and provider continuation distinct.
+- [x] Keep instructions, conversation history, and provider continuation distinct.
 - [ ] Support instruction changes with explicit authority and capability requirements.
 - [x] Add resource storage and image input without repeatedly copying large assets.
-- [ ] Define explicit native-resume versus portable-context restoration policies.
+- [x] Define explicit native-resume versus portable-context restoration policies.
 - [ ] Add structured-result validation; distinguish native enforcement from validation
   of unconstrained output.
 - [ ] Represent skills as versioned inputs where supported, distinguishing availability

@@ -12,6 +12,8 @@ mod context;
 pub use context::{ContextMode, ContextTask, TextContextMode};
 mod continuation;
 mod recording;
+mod restoration;
+pub use restoration::{PortableRestore, RestorationPolicy, RestoredSession};
 mod session;
 pub use recording::{RecordActors, RecordedRun, RecordingError};
 pub use session::{AcpEvent, AcpRun, AcpSession, PermissionId};

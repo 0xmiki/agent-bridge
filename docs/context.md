@@ -193,5 +193,6 @@ Verified September 5, 2026 with a generated 32-by-32 solid-red PNG:
 
 Protocol image support is necessary but not proof of model-level success. The
 example validates the answer independently of input-delivery evidence. Claude
-verification remains deferred. Native restoration policy, base-instruction authority,
+verification remains deferred. [Restoration policy](restoration.md) now makes native
+resume and portable selection explicit. Base-instruction authority,
 explicit omission policies, skills, and structured-result validation remain M3 work.

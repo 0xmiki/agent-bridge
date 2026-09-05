@@ -50,6 +50,7 @@ use tools.` All three use the same `providers` example and `AcpDriver`.
 | Cancellation during a running MCP tool | Passed | Passed | Blocked by authentication |
 | Client permission approval and dismissal | Passed | Passed | Blocked by authentication |
 | PNG color check with retained resource receipts | Passed with mimo-v2.5-free; big-pickle failed | Passed with gpt-6-astra | Deferred |
+| Portable conversation transfer | Passed to/from Codex | Passed to/from OpenCode | Deferred |
 
 Codex used local codex-cli 0.153.4 via the explicit override. Claude used the
 adapter's Claude Agent SDK 0.3.257. Claude returned ACP's structured authentication
