@@ -740,11 +740,60 @@ fn actors() -> RecordActors {
     }
 }
 
-async fn recorded_next(run: &mut RecordedRun<'_, '_, '_, MemoryStore>) -> Option<AcpEvent> {
+async fn recorded_next<S: RecordStore>(run: &mut RecordedRun<'_, '_, '_, S>) -> Option<AcpEvent> {
     timeout(Duration::from_secs(3), run.next())
         .await
         .unwrap()
         .unwrap()
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn a_recorded_run_survives_sqlite_reopen_and_cannot_be_reexecuted_with_the_same_id() {
+    use agent_bridge::records::SqliteStore;
+    let files = TestFiles::new();
+    let path = files.path("history.sqlite3");
+    let store = SqliteStore::open(&path).unwrap();
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_run(
+                RunId::new("persisted-run").unwrap(),
+                "Hello",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    let before = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    drop(store);
+
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .list(&SessionId::new("app-session").unwrap(), None, 100)
+            .unwrap(),
+        before
+    );
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        assert!(matches!(
+            session.start_recorded_run(
+                RunId::new("persisted-run").unwrap(),
+                "Hello",
+                &reopened,
+                actors()
+            ),
+            Err(RecordingError::RunAlreadyRecorded)
+        ));
+    }
+    connection.shutdown().await.unwrap();
 }
 
 #[tokio::test]

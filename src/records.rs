@@ -5,12 +5,19 @@
 
 mod memory;
 pub use memory::MemoryStore;
+mod rules;
+#[cfg(feature = "sqlite")]
+mod sqlite;
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteStore;
 
 use crate::{ActorId, Message, Record, RecordId, RunId, RunSpec, SessionId};
 use serde_json::Value;
 use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(rename_all = "snake_case"))]
 pub enum MessageKind {
     User,
     Agent,
@@ -18,6 +25,8 @@ pub enum MessageKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(rename_all = "snake_case"))]
 pub enum ToolStatus {
     Pending,
     Running,
@@ -27,6 +36,8 @@ pub enum ToolStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct ToolActivity {
     pub title: String,
     pub status: ToolStatus,
@@ -37,6 +48,8 @@ pub struct ToolActivity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct PermissionOption {
     pub id: String,
     pub label: String,
@@ -45,12 +58,24 @@ pub struct PermissionOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "sqlite",
+    serde(
+        tag = "type",
+        content = "data",
+        rename_all = "snake_case",
+        deny_unknown_fields
+    )
+)]
 pub enum PermissionOutcome {
     Selected(String),
     Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(rename_all = "snake_case"))]
 pub enum DecisionDelivery {
     /// Accepted by the local transport queue, not acknowledged by the provider.
     Queued,
@@ -59,6 +84,16 @@ pub enum DecisionDelivery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "sqlite",
+    serde(
+        tag = "type",
+        content = "data",
+        rename_all = "snake_case",
+        deny_unknown_fields
+    )
+)]
 pub enum CompletionReason {
     Completed,
     Refused,
@@ -69,6 +104,16 @@ pub enum CompletionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "sqlite",
+    serde(
+        tag = "type",
+        content = "data",
+        rename_all = "snake_case",
+        deny_unknown_fields
+    )
+)]
 pub enum Payload {
     Message {
         kind: MessageKind,
@@ -98,6 +143,8 @@ pub enum Payload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(rename_all = "snake_case"))]
 pub enum RecordState {
     Open,
     Complete,
@@ -111,6 +158,8 @@ impl RecordState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct SourceRef {
     pub namespace: String,
     pub id: String,
@@ -137,7 +186,7 @@ pub struct Snapshot {
     pub state: RecordState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     MissingSession,
     MissingRun,
@@ -153,6 +202,12 @@ pub enum StoreError {
     InvalidPageSize,
     SequenceExhausted,
     Poisoned,
+    Busy,
+    Database(String),
+    CorruptData(String),
+    UnsupportedSchemaVersion(i64),
+    UnsupportedDataVersion(u32),
+    UnversionedSchema,
 }
 
 impl fmt::Display for StoreError {
@@ -163,8 +218,8 @@ impl fmt::Display for StoreError {
 impl Error for StoreError {}
 
 /// Local synchronous storage semantics, not a distributed execution scheduler.
-/// Implementations must make each mutation atomic. Remote/async adapters and a
-/// serialized schema are deliberately not promised by this initial trait.
+/// Implementations must make each mutation atomic. SQLite owns its versioned
+/// serialized format; remote/async adapters remain outside this initial trait.
 pub trait RecordStore: Send + Sync {
     fn create_session(&self, id: SessionId) -> Result<(), StoreError>;
     /// Returns true only for a new identity, false for an identical registration.

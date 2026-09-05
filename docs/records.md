@@ -1,7 +1,9 @@
 # Records and local storage
 
-Working implementation, not a frozen database schema. `MemoryStore` is process-local
-and loses its data when the application exits. SQLite is still to come.
+Working implementation. `MemoryStore` is process-local and loses its data when the
+application exits. The optional [SQLite adapter](sqlite.md) persists records across
+restarts, using schema and JSON format version 1. Future format changes need explicit
+compatibility handling even while the public API continues to evolve.
 
 ## Recorded runs
 
@@ -76,8 +78,9 @@ silently changing past inputs. Summaries should be separate derived records.
 
 ## Store guarantees
 
-The current synchronous `RecordStore` trait targets local backends. Mutations are
-atomic, including concurrent calls through clones of `MemoryStore`:
+The synchronous `RecordStore` trait targets local backends. Memory and SQLite share
+validation rules and contract tests. Mutations are atomic, including calls through
+clones and, for SQLite, independent connections to the same database:
 
 - Stable IDs, unique session ordering, and exclusive-cursor pagination.
 - Record ownership matching the registered run's session.
@@ -114,7 +117,7 @@ return storage failures. No background retry proves an unknown action did not ha
 
 ## Next questions
 
-- Serialization and migration rules for SQLite.
+- Future schema and data-version migrations while preserving version 1 files.
 - Whether local and remote stores should share an async interface.
 - Resource deduplication and retention for large content.
 - Atomic execution intent, decision delivery, and crash recovery.

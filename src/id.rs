@@ -19,6 +19,8 @@ macro_rules! identifier {
         /// Values are caller-assigned and preserved verbatim. Uniqueness belongs
         /// to the runtime or storage layer. This value is not a filesystem path.
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "sqlite", serde(try_from = "String"))]
         pub struct $name(String);
 
         impl $name {
@@ -38,6 +40,14 @@ macro_rules! identifier {
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(self.as_str())
+            }
+        }
+
+        #[cfg(feature = "sqlite")]
+        impl TryFrom<String> for $name {
+            type Error = InvalidId;
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::new(value)
             }
         }
     };

@@ -7,12 +7,15 @@ description = "Connect applications to installed AI agents"
 [features]
 default = []
 records = ["dep:serde_json"]
+sqlite = ["records", "dep:rusqlite", "dep:serde"]
 acp = ["records", "dep:agent-client-protocol", "dep:tokio"]
 
 [dependencies]
 agent-client-protocol = { version = "2.1.0", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"], optional = true }
 serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"], optional = true }
 
 [dev-dependencies]
 serde_json = "1"
@@ -24,3 +27,7 @@ required-features = ["acp"]
 [[example]]
 name = "acp_chat"
 required-features = ["acp"]
+
+[[example]]
+name = "sqlite_history"
+required-features = ["sqlite"]

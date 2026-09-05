@@ -19,6 +19,8 @@ pub struct Session {
 
 /// A specific resource revision. Resolution and retention belong to its store.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct ResourceRef {
     pub id: ResourceId,
     pub revision: String,
@@ -26,6 +28,8 @@ pub struct ResourceRef {
 
 /// Intended instruction semantics, not a guarantee of provider support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(rename_all = "snake_case"))]
 pub enum InstructionRole {
     /// Requires the provider's base-instruction mechanism.
     Base,
@@ -34,6 +38,8 @@ pub enum InstructionRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct InstructionRef {
     pub resource: ResourceRef,
     pub role: InstructionRole,
@@ -45,6 +51,8 @@ pub struct InstructionRef {
 /// must validate access, existence, and supported semantics before dispatch.
 /// An empty manifest selects no explicit context; it does not disable provider defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct ContextManifest {
     pub records: Vec<RecordId>,
     pub instructions: Vec<InstructionRef>,
@@ -67,11 +75,23 @@ pub struct Record<P> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "sqlite", serde(deny_unknown_fields))]
 pub struct Message {
     pub content: Vec<Content>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "sqlite", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "sqlite",
+    serde(
+        tag = "type",
+        content = "data",
+        rename_all = "snake_case",
+        deny_unknown_fields
+    )
+)]
 pub enum Content {
     Text(String),
     Resource(ResourceRef),

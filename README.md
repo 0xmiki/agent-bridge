@@ -13,8 +13,8 @@ references, typed record envelopes, and an in-memory run lifecycle. The optional
 ACP adapter launches installed agents, creates sessions, streams text runs and tool
 activity, routes permission decisions, and handles cancellation. It can supply
 existing MCP server configuration when creating a session. Recorded runs assemble
-portable transcripts through a local store, with an in-memory implementation.
-Disk persistence, grant policies, and cross-process continuation are still to come.
+portable transcripts through memory or SQLite stores. Grant policies and provider
+continuation recovery are still to come.
 
 ## Development
 
@@ -68,3 +68,14 @@ the API, tested behavior, and current limits.
 Use the `records` feature independently for portable payloads and the local storage
 contract. See [records and storage](docs/records.md) for checkpoints, identity rules,
 and the distinction between local recording and durable execution.
+
+Enable `sqlite` for disk-backed records. It works independently of ACP:
+
+```sh
+cargo run --features sqlite --example sqlite_history -- /tmp/agent-bridge.sqlite3
+```
+
+This example writes a record, closes the store, and reads it after reopening.
+For a real agent, use `SqliteStore::open(path)` in place of `MemoryStore` when
+calling `start_recorded_run`. See [SQLite storage](docs/sqlite.md) for migrations,
+the versioned format, and restart behavior.

@@ -7,8 +7,9 @@ show a better boundary. See [philosophy.md](../philosophy.md) for the intent.
 Implementation checkpoints: the core types and lifecycle now have tests; the
 optional [ACP adapter](acp.md) can create sessions and stream text runs using the
 shared lifecycle. [Recorded runs](records.md) assemble portable payloads through
-a provisional local store, currently in memory. No serialized schema, durable
-execution, or provider-continuation contract is frozen by that implementation.
+a provisional local store backed by memory or [SQLite](sqlite.md). SQLite has a
+version 1 persistence format; future changes must migrate it or retain its decoder.
+Durable execution and provider continuation remain separate, open contracts.
 
 ## Four concepts
 
@@ -90,8 +91,9 @@ need a durable row for every token.
 
 The `records` feature now defines message, tool activity, permission, decision,
 completion, failure, and extension payloads. Open records accept revision-checked
-checkpoints; finalized records are immutable. A serialization format, resource
-store, namespaced extension registry, and migration policy remain open.
+checkpoints; finalized records are immutable. SQLite now versions its tables and
+serialized payloads. Resource storage, an extension registry, and future migration
+steps remain open.
 
 Permission records preserve offered options and local delivery state. The memory
 store accepts one valid decision atomically with request finalization. General
@@ -117,7 +119,7 @@ Start with slots, sessions, runs, and records, plus provider continuation storag
 when we implement native resume. Resources can use a separate store. This is a
 logical model, not a requirement to squeeze everything into four SQL tables.
 
-Memory and SQLite implementations should obey the same behavioral contract:
+Memory and SQLite implementations now obey the same tested behavioral contract:
 stable IDs, unique session ordering, guarded state changes, atomic interaction
 resolution, and duplicate-write handling. A stored run is not a distributed job
 queue. Worker claims and leases need a separate contract if we add that capability.

@@ -1,3 +1,4 @@
+use super::rules::{same_draft, validate};
 use super::*;
 use std::{
     collections::HashMap,
@@ -23,34 +24,6 @@ struct Entry {
     // without keeping every token checkpoint or copying an unchanged payload.
     initial: Arc<Snapshot>,
     current: Arc<Snapshot>,
-}
-
-fn same_draft(snapshot: &Snapshot, draft: &Draft) -> bool {
-    let record = &snapshot.record;
-    record.id == draft.id
-        && record.session_id == draft.session_id
-        && record.run_id == draft.run_id
-        && record.actor == draft.actor
-        && record.reply_to_id == draft.reply_to_id
-        && record.payload == draft.payload
-        && snapshot.source == draft.source
-        && snapshot.state == draft.state
-}
-
-fn validate(payload: &Payload, state: RecordState) -> Result<(), StoreError> {
-    if let Payload::Permission { options, .. } = payload {
-        let mut ids = std::collections::HashSet::new();
-        if options
-            .iter()
-            .any(|o| o.id.trim().is_empty() || !ids.insert(&o.id))
-        {
-            return Err(StoreError::InvalidPayload);
-        }
-    }
-    if matches!(payload, Payload::Decision { .. }) && state != RecordState::Complete {
-        return Err(StoreError::InvalidPayload);
-    }
-    Ok(())
 }
 
 impl State {
@@ -165,45 +138,7 @@ impl RecordStore for MemoryStore {
     ) -> Result<Arc<Snapshot>, StoreError> {
         let mut state = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
         let entry = state.records.get_mut(id).ok_or(StoreError::MissingRecord)?;
-        let current = &entry.current;
-        // An exact retry of the previous successful write is harmless.
-        if current.record.payload == payload
-            && current.state == next
-            && (current.revision == expected_revision
-                || Some(current.revision) == expected_revision.checked_add(1))
-        {
-            return Ok(current.clone());
-        }
-        if current.revision != expected_revision {
-            return Err(StoreError::RevisionConflict);
-        }
-        if current.state.is_final() {
-            return Err(StoreError::Finalized);
-        }
-        if std::mem::discriminant(&current.record.payload) != std::mem::discriminant(&payload) {
-            return Err(StoreError::InvalidPayload);
-        }
-        if let (Payload::Message { kind: old, .. }, Payload::Message { kind: new, .. }) =
-            (&current.record.payload, &payload)
-            && old != new
-        {
-            return Err(StoreError::InvalidPayload);
-        }
-        if matches!(payload, Payload::Permission { .. })
-            && (payload != current.record.payload || next == RecordState::Complete)
-        {
-            return Err(StoreError::InvalidDecision);
-        }
-        validate(&payload, next)?;
-        let revision = current
-            .revision
-            .checked_add(1)
-            .ok_or(StoreError::SequenceExhausted)?;
-        let mut snapshot = (**current).clone();
-        snapshot.record.payload = payload;
-        snapshot.revision = revision;
-        snapshot.state = next;
-        let snapshot = Arc::new(snapshot);
+        let snapshot = rules::checkpoint(&entry.current, expected_revision, payload, next)?;
         entry.current = snapshot.clone();
         Ok(snapshot)
     }
@@ -232,35 +167,7 @@ impl RecordStore for MemoryStore {
             .ok_or(StoreError::MissingRecord)?
             .current
             .clone();
-        if original.revision != expected_revision {
-            return Err(StoreError::RevisionConflict);
-        }
-        if original.state != RecordState::Open {
-            return Err(StoreError::Finalized);
-        }
-        let Payload::Permission { options, .. } = &original.record.payload else {
-            return Err(StoreError::InvalidDecision);
-        };
-        let Payload::Decision { outcome, .. } = &decision.payload else {
-            return Err(StoreError::InvalidDecision);
-        };
-        if decision.reply_to_id.as_ref() != Some(request)
-            || decision.session_id != original.record.session_id
-            || decision.run_id != original.record.run_id
-        {
-            return Err(StoreError::InvalidDecision);
-        }
-        if let PermissionOutcome::Selected(id) = outcome
-            && !options.iter().any(|option| &option.id == id)
-        {
-            return Err(StoreError::InvalidDecision);
-        }
-        let mut resolved = (*original).clone();
-        resolved.state = RecordState::Complete;
-        resolved.revision = resolved
-            .revision
-            .checked_add(1)
-            .ok_or(StoreError::SequenceExhausted)?;
+        let resolved = rules::resolve_request(&original, expected_revision, &decision)?;
         let snapshot = state.prepare(decision)?;
         state
             .decisions

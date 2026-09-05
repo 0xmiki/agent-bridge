@@ -2,8 +2,9 @@
 //!
 //! The execution model is independent of transports. The optional `acp` module adds
 //! subprocess sessions, streamed text runs, and permission routing. The `records`
-//! feature adds portable transcripts and an in-memory store. Disk persistence
-//! and crash recovery are still to come.
+//! feature adds portable transcripts and an in-memory store. The optional `sqlite`
+//! feature persists records across restarts. Provider execution recovery is still
+//! separate work.
 //! Public types remain provisional.
 
 #[cfg(feature = "acp")]

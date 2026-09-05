@@ -152,7 +152,8 @@ text and does not replay application history, resolve context manifests, or stor
 continuation handles. The current empty core context manifest means no explicit
 record/resource selection was supplied; it does not mean the native session has
 no history. The optional [recorded-run wrapper](records.md) now assembles portable
-records in a local store. Disk persistence and continuation recovery remain open.
+records in a memory or [SQLite store](sqlite.md). Persisted transcripts do not restore
+the provider's native session; continuation recovery remains open.
 
 Model selection, instruction injection, image input, native resume/close, structured
 output, and other client requests remain outside this step. Updates outside active
