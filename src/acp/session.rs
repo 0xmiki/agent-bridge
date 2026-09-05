@@ -308,6 +308,56 @@ impl AcpConnection {
 }
 
 impl<'connection> AcpSession<'connection> {
+    /// Resolve and append explicit context as user-level text. Unsupported inputs
+    /// fail before registration; receipts precede dispatch and track observed evidence.
+    pub fn start_recorded_context_run<
+        'session,
+        'store,
+        S: crate::records::RecordStore,
+        R: crate::context::ResourceStore,
+    >(
+        &'session mut self,
+        id: RunId,
+        task: super::ContextTask<'_, R>,
+        store: &'store S,
+        actors: super::RecordActors,
+    ) -> Result<super::RecordedRun<'session, 'connection, 'store, S>, super::RecordingError> {
+        if task.prompt.trim().is_empty() {
+            return Err(AcpError::EmptyPrompt.into());
+        }
+        if self.retired || !self.quiescent {
+            return Err(AcpError::SessionUnavailable.into());
+        }
+        if self.connection.is_closed() {
+            return Err(AcpError::Closed.into());
+        }
+        let mut spec = self.run_spec(id)?;
+        let context = crate::context::prepare(
+            task.manifest,
+            store,
+            task.resources,
+            std::slice::from_ref(&self.session_id),
+            task.limits,
+        )?;
+        let (wire, receipt) = match task.mode {
+            super::TextContextMode::AppendToNative => {
+                super::context::encode(&context, task.prompt, task.max_prompt_bytes)?
+            }
+        };
+        spec.context = context.manifest;
+        let mut recorder =
+            super::recording::Recorder::new(store, spec.clone(), task.prompt, actors)?;
+        recorder.prepare_input(receipt)?;
+        recorder.input_dispatch_attempted()?;
+        match self.dispatch(spec, wire) {
+            Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
+            Err(error) => {
+                recorder.interrupt(error.to_string())?;
+                Err(error.into())
+            }
+        }
+    }
+
     /// Register execution identity and input before dispatch, then record observed
     /// events. This does not make external execution atomic with store writes.
     pub fn start_recorded_run<'session, 'store, S: crate::records::RecordStore>(

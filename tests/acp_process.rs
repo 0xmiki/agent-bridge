@@ -777,6 +777,301 @@ fn actors() -> RecordActors {
     }
 }
 
+fn context_task<'a>(
+    manifest: &'a agent_bridge::ContextManifest,
+    resources: &'a agent_bridge::context::MemoryResourceStore,
+) -> agent_bridge::acp::ContextTask<'a, agent_bridge::context::MemoryResourceStore> {
+    agent_bridge::acp::ContextTask {
+        prompt: "Use the selected context",
+        manifest,
+        resources,
+        limits: agent_bridge::context::ContextLimits {
+            max_items: 20,
+            max_resource_bytes: 1024,
+        },
+        max_prompt_bytes: 8192,
+        mode: agent_bridge::acp::TextContextMode::AppendToNative,
+    }
+}
+
+fn input_receipts(store: &impl RecordStore) -> Vec<serde_json::Value> {
+    store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap()
+        .iter()
+        .filter_map(|record| match &record.record.payload {
+            Payload::Extension {
+                namespace,
+                name,
+                data,
+            } if namespace == "agent_bridge" && name == "input_receipt" => Some(data.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn receipt_write_failures_prevent_dispatch_without_reusing_the_run() {
+    for blocked_sequence in [1, 2] {
+        let files = TestFiles::new();
+        let database = files.path("receipt-failure.sqlite3");
+        let log = files.path("messages");
+        let store = agent_bridge::records::SqliteStore::open(&database).unwrap();
+        let sql = rusqlite::Connection::open(&database).unwrap();
+        sql.execute_batch(&format!("CREATE TRIGGER fail_receipt BEFORE INSERT ON agent_bridge_records WHEN NEW.sequence = {blocked_sequence} BEGIN SELECT RAISE(ABORT, 'receipt failure'); END;")).unwrap();
+        let connection = AcpConnection::connect(
+            launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+        )
+        .await
+        .unwrap();
+        let resources = agent_bridge::context::MemoryResourceStore::default();
+        let manifest = agent_bridge::ContextManifest::default();
+        {
+            let mut session = new_session(&connection).await;
+            assert!(matches!(
+                session.start_recorded_context_run(
+                    RunId::new("blocked").unwrap(),
+                    context_task(&manifest, &resources),
+                    &store,
+                    actors()
+                ),
+                Err(RecordingError::Store(_))
+            ));
+            sql.execute_batch("DROP TRIGGER fail_receipt").unwrap();
+            assert!(matches!(
+                session.start_recorded_context_run(
+                    RunId::new("blocked").unwrap(),
+                    context_task(&manifest, &resources),
+                    &store,
+                    actors()
+                ),
+                Err(RecordingError::RunAlreadyRecorded)
+            ));
+        }
+        connection.shutdown().await.unwrap();
+        assert!(
+            !std::fs::read_to_string(log)
+                .unwrap()
+                .contains("session/prompt")
+        );
+        let receipts = input_receipts(&store);
+        assert_eq!(receipts.len(), if blocked_sequence == 1 { 0 } else { 1 });
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn context_receipt_matches_wire_input_and_survives_reopen() {
+    use agent_bridge::context::{MemoryResourceStore, Resource};
+    use agent_bridge::records::SqliteStore;
+    use agent_bridge::{ContextManifest, InstructionRef, InstructionRole, ResourceId, ResourceRef};
+    let files = TestFiles::new();
+    let database = files.path("context.sqlite3");
+    let log = files.path("messages");
+    let store = SqliteStore::open(&database).unwrap();
+    let resources = MemoryResourceStore::default();
+    store
+        .create_session(SessionId::new("app-session").unwrap())
+        .unwrap();
+    let history = store
+        .insert(agent_bridge::records::Draft {
+            id: agent_bridge::RecordId::new("selected-history").unwrap(),
+            session_id: SessionId::new("app-session").unwrap(),
+            run_id: None,
+            actor: ActorId::new("original-author").unwrap(),
+            reply_to_id: None,
+            source: None,
+            state: RecordState::Interrupted,
+            payload: Payload::Message {
+                kind: MessageKind::Agent,
+                message: agent_bridge::Message {
+                    content: vec![Content::Text("an incomplete prior answer".into())],
+                },
+            },
+        })
+        .unwrap();
+    let reference = ResourceRef {
+        id: ResourceId::new("guide").unwrap(),
+        revision: "v1".into(),
+    };
+    resources
+        .put(Resource {
+            reference: reference.clone(),
+            media_type: "text/plain".into(),
+            bytes: std::sync::Arc::from(b"be concise".as_slice()),
+        })
+        .unwrap();
+    let manifest = ContextManifest {
+        records: vec![history.record.id.clone()],
+        instructions: vec![InstructionRef {
+            resource: reference,
+            role: InstructionRole::Supplemental,
+        }],
+        ..Default::default()
+    };
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_context_run(
+                RunId::new("context").unwrap(),
+                context_task(&manifest, &resources),
+                &store,
+                actors(),
+            )
+            .unwrap();
+        assert_eq!(run.run().spec().context, manifest);
+        let before = input_receipts(&store);
+        assert_eq!(
+            before
+                .iter()
+                .map(|v| v["state"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["prepared", "dispatch_attempted"]
+        );
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    drop(store);
+    drop(resources);
+    let reopened = SqliteStore::open(database).unwrap();
+    let receipts = input_receipts(&reopened);
+    assert_eq!(receipts[2]["state"], "response_received");
+    let messages = std::fs::read_to_string(log).unwrap();
+    let sent: serde_json::Value = messages
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|message| message["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(
+        receipts[0]["wire_text"],
+        sent["params"]["prompt"][0]["text"]
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_str(receipts[0]["wire_text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["resources"][0]["text"], "be concise");
+    assert_eq!(envelope["history"][0]["actor"], "original-author");
+    assert_eq!(envelope["history"][0]["state"], "interrupted");
+    assert_eq!(envelope["history"][0]["kind"], "agent");
+    assert_eq!(
+        envelope["supplemental_instructions"][0]["role"],
+        "supplemental_user_text"
+    );
+    assert_eq!(envelope["task"], "Use the selected context");
+}
+
+#[tokio::test]
+async fn unsupported_base_instructions_and_prompt_limits_do_not_dispatch() {
+    use agent_bridge::context::{MemoryResourceStore, Resource};
+    use agent_bridge::{ContextManifest, InstructionRef, InstructionRole, ResourceId, ResourceRef};
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let store = MemoryStore::default();
+    let resources = MemoryResourceStore::default();
+    let reference = ResourceRef {
+        id: ResourceId::new("base").unwrap(),
+        revision: "v1".into(),
+    };
+    resources
+        .put(Resource {
+            reference: reference.clone(),
+            media_type: "text/plain".into(),
+            bytes: std::sync::Arc::from(b"base instruction".as_slice()),
+        })
+        .unwrap();
+    let manifest = ContextManifest {
+        instructions: vec![InstructionRef {
+            resource: reference,
+            role: InstructionRole::Base,
+        }],
+        ..Default::default()
+    };
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        assert!(matches!(
+            session.start_recorded_context_run(
+                RunId::new("base").unwrap(),
+                context_task(&manifest, &resources),
+                &store,
+                actors()
+            ),
+            Err(RecordingError::UnsupportedContext(_))
+        ));
+        let empty = ContextManifest::default();
+        let mut task = context_task(&empty, &resources);
+        task.max_prompt_bytes = 1;
+        assert!(matches!(
+            session.start_recorded_context_run(
+                RunId::new("limit").unwrap(),
+                task,
+                &store,
+                actors()
+            ),
+            Err(RecordingError::UnsupportedContext(_))
+        ));
+        assert!(matches!(
+            store.get_run(&RunId::new("base").unwrap()),
+            Err(StoreError::MissingRun)
+        ));
+        assert!(matches!(
+            store.get_run(&RunId::new("limit").unwrap()),
+            Err(StoreError::MissingRun)
+        ));
+    }
+    connection.shutdown().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("session/prompt")
+    );
+}
+
+#[tokio::test]
+async fn interrupted_context_delivery_stays_unknown() {
+    for mode in ["cancel", "prompt-crash"] {
+        let store = MemoryStore::default();
+        let resources = agent_bridge::context::MemoryResourceStore::default();
+        let manifest = agent_bridge::ContextManifest::default();
+        let connection = AcpConnection::connect(launch(mode)).await.unwrap();
+        {
+            let mut session = new_session(&connection).await;
+            let mut run = session
+                .start_recorded_context_run(
+                    RunId::new("uncertain").unwrap(),
+                    context_task(&manifest, &resources),
+                    &store,
+                    actors(),
+                )
+                .unwrap();
+            if mode == "prompt-crash" {
+                assert!(
+                    timeout(Duration::from_secs(3), run.next())
+                        .await
+                        .unwrap()
+                        .is_err()
+                );
+            }
+            // Dropping before a correlated prompt response cannot establish delivery.
+        }
+        let receipts = input_receipts(&store);
+        assert_eq!(receipts.last().unwrap()["state"], "unknown");
+        assert!(
+            !receipts
+                .iter()
+                .any(|value| value["state"] == "response_received")
+        );
+        let _ = connection.shutdown().await;
+    }
+}
+
 async fn recorded_next<S: RecordStore>(run: &mut RecordedRun<'_, '_, '_, S>) -> Option<AcpEvent> {
     timeout(Duration::from_secs(3), run.next())
         .await

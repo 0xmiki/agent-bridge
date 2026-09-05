@@ -25,6 +25,8 @@ pub struct RecordActors {
 
 #[derive(Debug)]
 pub enum RecordingError {
+    Context(crate::context::ContextError),
+    UnsupportedContext(&'static str),
     Store(StoreError),
     Agent(AcpError),
     RunAlreadyRecorded,
@@ -35,6 +37,8 @@ pub enum RecordingError {
 impl fmt::Display for RecordingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Context(e) => e.fmt(f),
+            Self::UnsupportedContext(message) => f.write_str(message),
             Self::Store(e) => e.fmt(f),
             Self::Agent(e) => e.fmt(f),
             Self::RunAlreadyRecorded => {
@@ -49,6 +53,7 @@ impl fmt::Display for RecordingError {
 impl Error for RecordingError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Context(e) => Some(e),
             Self::Store(e) => Some(e),
             Self::Agent(e) => Some(e),
             Self::Serialization(e) => Some(e),
@@ -59,6 +64,11 @@ impl Error for RecordingError {
 impl From<StoreError> for RecordingError {
     fn from(e: StoreError) -> Self {
         Self::Store(e)
+    }
+}
+impl From<crate::context::ContextError> for RecordingError {
+    fn from(error: crate::context::ContextError) -> Self {
+        Self::Context(error)
     }
 }
 impl From<AcpError> for RecordingError {
@@ -89,6 +99,8 @@ pub(super) struct Recorder<'store, S: RecordStore> {
     permissions: HashMap<PermissionId, usize>,
     finished: bool,
     last_configuration: Option<ConfigValues>,
+    input_receipt: bool,
+    input_response: bool,
 }
 
 impl<'store, S: RecordStore> Recorder<'store, S> {
@@ -114,6 +126,8 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             permissions: HashMap::new(),
             finished: false,
             last_configuration,
+            input_receipt: false,
+            input_response: false,
         };
         this.insert(
             Payload::Message {
@@ -128,6 +142,34 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             RecordState::Complete,
         )?;
         Ok(this)
+    }
+
+    pub(super) fn prepare_input(
+        &mut self,
+        receipt: serde_json::Value,
+    ) -> Result<(), RecordingError> {
+        self.input_evidence(receipt)?;
+        self.input_receipt = true;
+        Ok(())
+    }
+
+    fn input_evidence(&mut self, data: serde_json::Value) -> Result<(), RecordingError> {
+        self.insert(
+            Payload::Extension {
+                namespace: "agent_bridge".into(),
+                name: "input_receipt".into(),
+                data,
+            },
+            self.actors.host.clone(),
+            None,
+            None,
+            RecordState::Complete,
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn input_dispatch_attempted(&mut self) -> Result<(), RecordingError> {
+        self.input_evidence(serde_json::json!({"version":1,"state":"dispatch_attempted"}))
     }
 
     fn draft(
@@ -404,6 +446,10 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
                 Ok(())
             }
             AcpEvent::Finished(reason) => {
+                if self.input_receipt {
+                    self.input_evidence(serde_json::json!({"version":1,"state":"response_received","stop_reason":reason}))?;
+                    self.input_response = true;
+                }
                 let normalized = match reason {
                     StopReason::EndTurn => CompletionReason::Completed,
                     StopReason::Refusal => CompletionReason::Refused,
@@ -471,6 +517,9 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
     pub(super) fn interrupt(&mut self, message: String) -> Result<(), RecordingError> {
         if self.finished {
             return Ok(());
+        }
+        if self.input_receipt && !self.input_response {
+            self.input_evidence(serde_json::json!({"version":1,"state":"unknown"}))?;
         }
         self.insert(
             Payload::Failure { message },

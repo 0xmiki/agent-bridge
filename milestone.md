@@ -28,6 +28,8 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   and separate core, records, ACP, SQLite, and providers feature builds.
 - The first M3 increment passes 125 Rust tests, Clippy, documentation generation,
   and separate core and records builds.
+- Text-context delivery and receipt verification add four tests, for 129 total.
+  Real OpenCode and Codex checks retrieved selected history and reopened receipts.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -147,12 +149,19 @@ This changes M2's progression gate, not the compatibility evidence or release cl
 First increment: [context preparation](docs/context.md) resolves selected immutable
 history and exact resource revisions, preserves instruction roles, and rejects
 unavailable inputs without dispatch. Memory resource storage is replaceable and
-shares resource bytes across references. Provider delivery, durable input receipts,
-resource persistence, and restoration policy remain work for subsequent increments.
+shares resource bytes across references. The delivery increment below builds on
+this preparation layer; resource persistence and restoration policy remain open.
 
-Next slice: define capability-aware delivery of prepared inputs and a persisted
-receipt that distinguishes prepared, supplied, omitted, and unknown delivery states.
-Do not silently flatten required base instructions into user text.
+The second increment adds explicit ACP text-context delivery and persisted input
+receipts. It rejects unsupported inputs before dispatch and keeps native context
+separate. The receipt stores exact encoded text once, then appends dispatch-attempt
+and response evidence. Dropped/crashed runs do not become confirmed delivery.
+See [context delivery and receipts](docs/context.md) and
+[the runnable example](examples/acp_context.rs).
+
+Next slice: durable resource retention and image delivery with explicit provider
+capability checks. Native restoration policy, base-instruction authority, omission
+policies, skills, and structured output remain later M3 increments.
 
 - [x] Resolve explicit context manifests from stored records and resources.
 - [ ] Record what the bridge supplied, including instruction revisions and omissions.

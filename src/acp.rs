@@ -8,6 +8,8 @@
 //! log wire messages, install agents, or authenticate automatically.
 
 mod configuration;
+mod context;
+pub use context::{ContextTask, TextContextMode};
 mod continuation;
 mod recording;
 mod session;

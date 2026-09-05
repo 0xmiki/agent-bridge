@@ -13,6 +13,9 @@ schema version 3 while serialized record documents remain version 1. Native ACP
 Durable execution and uncertain-outcome reconciliation remain open contracts.
 M1 adds [configuration discovery and attribution](configuration.md), model changes
 between runs, and links to a resumed session's originating continuation.
+M3 adds [context preparation and recorded text delivery](context.md), including
+exact input receipts that distinguish preparation, dispatch intent, and observed
+provider responses. Required base instructions are not lowered to ordinary text.
 
 ## Four concepts
 
