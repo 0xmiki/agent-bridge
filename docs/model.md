@@ -5,8 +5,9 @@ a frozen API or database schema. Change it when examples or provider behavior
 show a better boundary. See [philosophy.md](../philosophy.md) for the intent.
 
 Implementation checkpoints: the core types and lifecycle now have tests; the
-optional [ACP connection](acp.md) can initialize an installed agent. No execution,
-storage, or provider-continuation contract is frozen by that adapter yet.
+optional [ACP adapter](acp.md) can create sessions and stream text runs using the
+shared lifecycle. Its native events are not converted into portable records yet.
+No storage or provider-continuation contract is frozen by that adapter.
 
 ## Four concepts
 

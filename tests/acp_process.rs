@@ -11,6 +11,11 @@ use std::{
 };
 
 use agent_bridge::acp::{AcpConnection, AcpError, AcpLaunch};
+use agent_bridge::acp::{AcpEvent, AcpRun, AcpSession};
+use agent_bridge::{RunId, RunStatus, SessionId, SlotId};
+use agent_client_protocol::schema::v1::{
+    ContentBlock, McpServer, McpServerHttp, McpServerStdio, SessionUpdate, StopReason,
+};
 use tokio::time::timeout;
 
 fn fixture() -> PathBuf {
@@ -292,4 +297,432 @@ async fn dropping_a_connection_also_stops_wrapper_descendants() {
     drop(connection);
     assert_process_stopped(child_pid).await;
     assert_process_stopped(descendant_pid).await;
+}
+
+async fn new_session(connection: &AcpConnection) -> AcpSession<'_> {
+    connection
+        .new_session(
+            SessionId::new("app-session").unwrap(),
+            SlotId::new("fixture-slot").unwrap(),
+            std::env::current_dir().unwrap(),
+            vec![],
+        )
+        .await
+        .unwrap()
+}
+
+async fn next(run: &mut AcpRun<'_, '_>) -> Option<AcpEvent> {
+    timeout(Duration::from_secs(3), run.next())
+        .await
+        .expect("prompt should make progress")
+        .unwrap()
+}
+
+async fn drain(run: &mut AcpRun<'_, '_>) -> Vec<AcpEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = next(run).await {
+        events.push(event);
+    }
+    events
+}
+
+fn text(events: &[AcpEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AcpEvent::Update(SessionUpdate::AgentMessageChunk(chunk)) => match &chunk.content {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn streams_ordered_text_and_continues_the_same_native_session() {
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        for id in ["first", "second"] {
+            let mut run = session.start_run(RunId::new(id).unwrap(), "Hello").unwrap();
+            assert_eq!(run.input(), "Hello");
+            assert_eq!(run.run().status(), RunStatus::Starting);
+            let events = drain(&mut run).await;
+            assert_eq!(text(&events), "Hello world");
+            assert!(matches!(
+                events.last(),
+                Some(AcpEvent::Finished(StopReason::EndTurn))
+            ));
+            assert_eq!(run.run().status(), RunStatus::Completed);
+            assert_eq!(run.run().spec().id.as_str(), id);
+        }
+    }
+    connection.shutdown().await.unwrap();
+    let requests: Vec<serde_json::Value> = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "session/new")
+            .count(),
+        1
+    );
+    let prompts: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(
+        prompts[0]["params"]["sessionId"],
+        prompts[1]["params"]["sessionId"]
+    );
+}
+
+#[tokio::test]
+async fn routes_concurrent_native_sessions_independently() {
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut first = new_session(&connection).await;
+        let mut second = new_session(&connection).await;
+        assert_ne!(first.info().session_id, second.info().session_id);
+        let mut a = first.start_run(RunId::new("a").unwrap(), "First").unwrap();
+        let mut b = second
+            .start_run(RunId::new("b").unwrap(), "Second")
+            .unwrap();
+        let (a_events, b_events) = tokio::join!(drain(&mut a), drain(&mut b));
+        assert_eq!(text(&a_events), "Hello world");
+        assert_eq!(text(&b_events), "Hello world");
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn permissions_require_an_offered_option_and_cannot_be_reused() {
+    let connection = AcpConnection::connect(launch("permission")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut previous_id = None;
+        for run_id in ["first", "second"] {
+            let mut run = session
+                .start_run(RunId::new(run_id).unwrap(), "Read")
+                .unwrap();
+            let id = loop {
+                if let Some(AcpEvent::Permission { id, request }) = next(&mut run).await {
+                    assert_eq!(request.options.len(), 2);
+                    break id;
+                }
+            };
+            if let Some(previous) = previous_id {
+                assert!(matches!(
+                    run.respond(previous, Some("allow")),
+                    Err(AcpError::InvalidPermission)
+                ));
+            }
+            assert!(matches!(
+                run.respond(id.clone(), Some("invented")),
+                Err(AcpError::InvalidPermission)
+            ));
+            // No response is emitted until the caller chooses a valid option.
+            assert!(
+                timeout(Duration::from_millis(30), run.next())
+                    .await
+                    .is_err()
+            );
+            run.respond(id.clone(), Some("allow")).unwrap();
+            assert!(matches!(
+                run.respond(id.clone(), Some("allow")),
+                Err(AcpError::InvalidPermission)
+            ));
+            previous_id = Some(id);
+            let events = drain(&mut run).await;
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, AcpEvent::Update(SessionUpdate::ToolCallUpdate(_))))
+            );
+            assert_eq!(run.run().status(), RunStatus::Completed);
+        }
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_dismisses_all_pending_permissions_and_waits_for_confirmation() {
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let connection = AcpConnection::connect(
+        launch("permissions").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()),
+    )
+    .await
+    .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_run(RunId::new("cancel-permissions").unwrap(), "Read")
+            .unwrap();
+        let mut ids = Vec::new();
+        while ids.len() < 2 {
+            if let Some(AcpEvent::Permission { id, .. }) = next(&mut run).await {
+                ids.push(id);
+            }
+        }
+        run.cancel().unwrap();
+        assert_eq!(run.run().status(), RunStatus::Cancelling);
+        for id in ids {
+            assert!(matches!(
+                run.respond(id, Some("allow")),
+                Err(AcpError::InvalidPermission)
+            ));
+        }
+        let events = drain(&mut run).await;
+        assert!(matches!(
+            events.last(),
+            Some(AcpEvent::Finished(StopReason::Cancelled))
+        ));
+        assert_eq!(run.run().status(), RunStatus::Cancelled);
+    }
+    connection.shutdown().await.unwrap();
+    let requests: Vec<serde_json::Value> = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["result"]["outcome"]["outcome"] == "cancelled")
+            .count(),
+        2
+    );
+    assert!(requests.iter().any(|r| r["method"] == "session/cancel"));
+}
+
+#[tokio::test]
+async fn accepts_late_updates_during_cancellation() {
+    let connection = AcpConnection::connect(launch("cancel")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_run(RunId::new("cancel").unwrap(), "Hello")
+            .unwrap();
+        assert!(matches!(next(&mut run).await, Some(AcpEvent::Update(_))));
+        run.cancel().unwrap();
+        let events = drain(&mut run).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AcpEvent::Update(SessionUpdate::ToolCallUpdate(_))))
+        );
+        assert_eq!(run.run().status(), RunStatus::Cancelled);
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_provider_crash_leaves_the_run_unknown() {
+    let connection = AcpConnection::connect(launch("prompt-crash"))
+        .await
+        .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_run(RunId::new("crash").unwrap(), "Hello")
+            .unwrap();
+        let result = timeout(Duration::from_secs(3), run.next()).await.unwrap();
+        assert!(matches!(result, Err(AcpError::Closed)));
+        assert_eq!(run.run().status(), RunStatus::Unknown);
+    }
+    assert!(connection.shutdown().await.is_err());
+}
+
+#[tokio::test]
+async fn peer_prompt_errors_fail_the_run() {
+    let connection = AcpConnection::connect(launch("prompt-error"))
+        .await
+        .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_run(RunId::new("error").unwrap(), "Hello")
+            .unwrap();
+        let result = timeout(Duration::from_secs(3), run.next()).await.unwrap();
+        assert!(matches!(result, Err(AcpError::Protocol(_))));
+        assert_eq!(run.run().status(), RunStatus::Failed);
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dropping_a_run_retires_the_session_instead_of_mixing_late_events() {
+    let connection = AcpConnection::connect(launch("cancel")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        {
+            let mut run = session
+                .start_run(RunId::new("abandon").unwrap(), "Hello")
+                .unwrap();
+            let _ = next(&mut run).await;
+        }
+        assert!(matches!(
+            session.start_run(RunId::new("retry").unwrap(), "Hello"),
+            Err(AcpError::SessionUnavailable)
+        ));
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_slow_consumer_gets_an_explicit_overflow_error() {
+    let connection = AcpConnection::connect(launch("flood")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_run(RunId::new("overflow").unwrap(), "Hello")
+            .unwrap();
+        timeout(Duration::from_secs(3), async {
+            while !connection.is_closed() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(run.next().await, Err(AcpError::EventBufferFull)));
+        assert_eq!(run.run().status(), RunStatus::Unknown);
+    }
+    assert!(connection.shutdown().await.is_err());
+}
+
+#[tokio::test]
+async fn sends_workspace_and_mcp_configuration_without_modifying_it() {
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let server =
+        McpServer::Stdio(McpServerStdio::new("app-tools", fixture()).args(vec!["tools".into()]));
+    let session = connection
+        .new_session(
+            SessionId::new("app").unwrap(),
+            SlotId::new("slot").unwrap(),
+            cwd.clone(),
+            vec![server],
+        )
+        .await
+        .unwrap();
+    drop(session);
+    connection.shutdown().await.unwrap();
+    let request: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request["params"]["cwd"], cwd.to_string_lossy().as_ref());
+    assert_eq!(request["params"]["mcpServers"][0]["name"], "app-tools");
+    assert_eq!(request["params"]["mcpServers"][0]["args"][0], "tools");
+}
+
+#[tokio::test]
+async fn rejects_invalid_workspace_and_unsupported_mcp_before_dispatch() {
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    let id = SessionId::new("app").unwrap();
+    let slot = SlotId::new("slot").unwrap();
+    assert!(matches!(
+        connection
+            .new_session(id.clone(), slot.clone(), "relative", vec![])
+            .await,
+        Err(AcpError::InvalidWorkingDirectory)
+    ));
+    assert!(matches!(
+        connection
+            .new_session(
+                id.clone(),
+                slot.clone(),
+                std::env::current_dir().unwrap(),
+                vec![McpServer::Stdio(McpServerStdio::new(
+                    "tools",
+                    "relative-command"
+                ))],
+            )
+            .await,
+        Err(AcpError::InvalidMcpCommand)
+    ));
+    assert!(matches!(
+        connection
+            .new_session(
+                id,
+                slot,
+                std::env::current_dir().unwrap(),
+                vec![McpServer::Http(McpServerHttp::new(
+                    "tools",
+                    "http://localhost:1"
+                ))]
+            )
+            .await,
+        Err(AcpError::UnsupportedMcpTransport)
+    ));
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_blank_prompt_does_not_poison_the_session() {
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        assert!(matches!(
+            session.start_run(RunId::new("blank").unwrap(), " \n"),
+            Err(AcpError::EmptyPrompt)
+        ));
+        let mut run = session
+            .start_run(RunId::new("valid").unwrap(), "Hello")
+            .unwrap();
+        assert_eq!(text(&drain(&mut run).await), "Hello world");
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_creation_errors_and_duplicate_ids_do_not_create_usable_handles() {
+    let connection = AcpConnection::connect(launch("new-error")).await.unwrap();
+    assert!(matches!(
+        connection
+            .new_session(
+                SessionId::new("app").unwrap(),
+                SlotId::new("slot").unwrap(),
+                std::env::current_dir().unwrap(),
+                vec![]
+            )
+            .await,
+        Err(AcpError::Protocol(_))
+    ));
+    connection.shutdown().await.unwrap();
+    let connection = AcpConnection::connect(launch("duplicate")).await.unwrap();
+    let first = new_session(&connection).await;
+    assert!(matches!(
+        connection
+            .new_session(
+                SessionId::new("other").unwrap(),
+                SlotId::new("slot").unwrap(),
+                std::env::current_dir().unwrap(),
+                vec![]
+            )
+            .await,
+        Err(AcpError::SessionUnavailable)
+    ));
+    drop(first);
+    connection.shutdown().await.unwrap();
 }

@@ -1,7 +1,8 @@
 //! Shared integration for connecting applications to installed AI agents.
 //!
 //! The execution model is independent of transports. The optional `acp` module adds
-//! subprocess initialization; prompting and persistence are still to come.
+//! subprocess sessions, streamed text runs, and permission routing. Persistence
+//! and portable record conversion are still to come.
 //! Public types remain provisional.
 
 #[cfg(feature = "acp")]

@@ -18,3 +18,7 @@ serde_json = "1"
 [[example]]
 name = "acp_connect"
 required-features = ["acp"]
+
+[[example]]
+name = "acp_chat"
+required-features = ["acp"]
