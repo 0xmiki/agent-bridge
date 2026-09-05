@@ -6,11 +6,13 @@ description = "Connect applications to installed AI agents"
 
 [features]
 default = []
-acp = ["dep:agent-client-protocol", "dep:tokio"]
+records = ["dep:serde_json"]
+acp = ["records", "dep:agent-client-protocol", "dep:tokio"]
 
 [dependencies]
 agent-client-protocol = { version = "2.1.0", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 serde_json = "1"
