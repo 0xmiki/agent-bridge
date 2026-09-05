@@ -2,7 +2,11 @@
 
 Shared integration for connecting applications to installed AI agents.
 
-The project currently contains an initial Rust library crate.
+Early Rust library for a provider-independent execution model. The API is still
+being developed.
+
+Read the [philosophy](philosophy.md) and [working model](docs/model.md). Both will
+evolve as we test the implementation against real agents.
 
 ## Development
 
