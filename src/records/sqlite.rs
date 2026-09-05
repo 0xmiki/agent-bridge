@@ -1,5 +1,6 @@
 mod codec;
 mod continuation;
+mod resources;
 
 use super::*;
 use crate::{ContextManifest, InvalidId, SlotId};
@@ -15,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("sqlite/migrations/0001_records.sql"),
     include_str!("sqlite/migrations/0002_continuations.sql"),
     include_str!("sqlite/migrations/0003_run_configuration.sql"),
+    include_str!("sqlite/migrations/0004_resources.sql"),
 ];
 const RECORD_COLUMNS: &str = "id, session_id, run_id, sequence, actor_id, reply_to_id, source_json, payload_json, state, revision, initial_json";
 
@@ -129,6 +131,8 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         "SELECT id, next_sequence FROM agent_bridge_sessions LIMIT 0",
         "SELECT id, session_id, slot_id, context_json, config_json, continuation_id FROM agent_bridge_runs LIMIT 0",
         "SELECT request_id, response_id FROM agent_bridge_decisions LIMIT 0",
+        "SELECT sha256, bytes FROM agent_bridge_resource_blobs LIMIT 0",
+        "SELECT resource_id, revision, media_type, sha256 FROM agent_bridge_resource_versions LIMIT 0",
         "SELECT id, session_id, adapter, scope, native_key, predecessor_id, descriptor_json, state, latest FROM agent_bridge_continuations LIMIT 0",
     ] {
         transaction.prepare(query).map_err(database_error)?;

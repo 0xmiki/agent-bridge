@@ -250,7 +250,7 @@ fn migrations_coexist_with_application_tables_and_user_version() {
             .query_row("SELECT version FROM agent_bridge_schema", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
 }
 
@@ -310,7 +310,7 @@ fn upgrades_a_version_one_database_without_losing_records() {
                 row.get::<_, i64>(0)
             })
             .unwrap(),
-        3
+        4
     );
     assert!(
         connection

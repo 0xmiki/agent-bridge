@@ -49,6 +49,7 @@ use tools.` All three use the same `providers` example and `AcpDriver`.
 | MCP tool result and streamed tool events | Passed | Passed | Blocked by authentication |
 | Cancellation during a running MCP tool | Passed | Passed | Blocked by authentication |
 | Client permission approval and dismissal | Passed | Passed | Blocked by authentication |
+| PNG color check with retained resource receipts | Passed with mimo-v2.5-free; big-pickle failed | Passed with gpt-6-astra | Deferred |
 
 Codex used local codex-cli 0.153.4 via the explicit override. Claude used the
 adapter's Claude Agent SDK 0.3.257. Claude returned ACP's structured authentication
@@ -142,7 +143,7 @@ as well as any result file, since shutdown can fail after workflow success.
 Cancellation establishes the provider's acknowledgement while a tool was running.
 It does not prove that every external tool side effect can be stopped or undone.
 The ledger distinguishes a cancelled pending timer from a cancellation notification
-received after a tool already finished. Native session load, images, HTTP/SSE MCP,
+received after a tool already finished. Native session load, HTTP/SSE MCP,
 and provider-managed subagents are not covered by these checks.
 
 Test the fixture without any provider or network access:

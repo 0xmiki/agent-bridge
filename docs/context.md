@@ -55,7 +55,7 @@ selection and prepare again; explicit omission policies remain future work.
 The limits bound selection count and unique resource bytes. They are not token
 budgets, record-payload size limits, or pre-fetch memory limits for custom stores.
 A resource store must bound its own I/O and allocation. Prepared values retain
-shared snapshots in memory; there is no new database schema in this increment.
+shared snapshots in memory; preparation itself does not write a database record.
 
 ## Recorded ACP text delivery
 
@@ -72,7 +72,7 @@ speaker labels remain data in that text; they are not reconstructed native messa
 roles. Native session context remains in place. Nothing automatically removes
 already-known history or makes a portable clone of hidden provider state.
 
-The current encoder accepts user/agent messages and UTF-8 plain-text or Markdown
+The text encoder accepts user/agent messages and UTF-8 plain-text or Markdown
 resources. Base instructions, reasoning records, non-message activity records, and
 binary resources fail before run registration or dispatch. Supplemental instructions
 are explicitly delivered as user-level guidance. The bridge does not silently
@@ -110,8 +110,8 @@ one transaction; M5 owns broader reconciliation.
 
 The exact text snapshot makes the receipt inspectable after reopening SQLite even
 if the in-memory resource store is gone. It deliberately costs one bounded text
-snapshot per run. Future durable resource retention can reduce that duplication;
-references alone would not preserve these bytes today. The receipt describes text
+snapshot per run. Text receipts retain this representation for compatibility;
+image receipts below use the separately retained resource bytes. The receipt describes text
 prepared for the provider, not its hidden context. Existing text-only run methods
 retain their previous behavior and do not create these context receipts.
 
@@ -133,6 +133,65 @@ the receipt text to the actual protocol request, preserve historical attribution
 reject unsupported base instructions and oversized prompts before dispatch, and
 exercise receipt-write failure, process crash, and dropped-run behavior.
 
-Provider-native restoration policy, base-instruction authority, durable resources,
-images, explicit omission policies, skills, and structured-result validation remain
-M3 work. Preparation alone is never evidence of successful delivery.
+## Durable resources and image delivery
+
+`ResourceArchive` adds an optional write contract to `ResourceStore`. The in-memory
+archive remains available, and `SqliteStore` now implements both traits. Its schema
+version 4 retains exact revisions and shares identical blobs by SHA-256 digest.
+See [resource retention](sqlite.md#resource-retention).
+
+Set `ContextTask.mode` to `ContextMode::AppendImagesToNative` to permit images in
+addition to text. `ContextMode::AppendToNative` preserves the previous text-only
+behavior; `TextContextMode` remains an alias for existing callers. The image path
+requires the provider's advertised ACP image capability. It accepts exact media
+types `image/png`, `image/jpeg`, `image/gif`, and `image/webp`, with matching file
+signatures. Full decoding, dimension checks, and model-specific acceptance remain
+with the provider. Base instructions still cannot use this path.
+
+The first prompt block is the text envelope. Each unique selected image revision
+gets one subsequent ACP image block with base64 data. References in selected
+messages resolve through the same resource map as direct selections. The envelope
+associates each image reference with its block index, media type, original byte
+count, and SHA-256 digest. The bridge does not fetch URLs or substitute captions.
+
+Image prompts use encoding `agent_bridge.media_context.v1` and input receipt data
+version `2`. The preparation receipt retains the text envelope and image descriptors,
+not base64 image copies. Later delivery-state receipts use version 2 for that run.
+Text-only prompts continue to use receipt version 1. The outer record JSON format
+is unchanged. For image inputs, `wire_bytes` and the prompt limit cover the serialized
+ACP content-block array, including base64 and escaping; they exclude request IDs and
+other RPC framing. Oversized images fail before dispatch.
+
+Image receipts depend on the supplied resource store for retained bytes. Using an
+in-memory store does not make them durable. Use `SqliteStore` or an application archive
+and retain those revisions for as long as receipts need to be inspectable. A reader
+can resolve the recorded reference and compare its bytes with the recorded digest;
+the [image example](../examples/acp_image.rs) does this after SQLite reopen.
+No base64 copies are added to each transcript receipt, though sending an image to
+a provider still requires encoding and transmitting it for that run.
+
+```sh
+OPENCODE_CONFIG_CONTENT='{"model":"opencode/mimo-v2.5-free"}' \
+cargo run --features acp,sqlite --example acp_image -- \
+  /tmp/image-example.sqlite3 /absolute/disposable-workspace \
+  /path/to/solid-red.png red opencode acp
+```
+
+This verification example accepts a PNG and an expected color. The expected answer
+is used only for local validation, not included in the prompt. It reopens the image
+store before dispatch and verifies the receipt digest after another reopen. It uses
+the configured model, dismisses tool permission requests, and times out after 60 seconds.
+
+Verified September 5, 2026 with a generated 32-by-32 solid-red PNG:
+
+- Codex ACP 1.10.0, local Codex 0.153.4, reported `gpt-6-astra`: passed.
+- OpenCode 1.18.25, reported `opencode/mimo-v2.5-free`: passed with an explicit
+  process-local model configuration.
+- OpenCode's default `opencode/big-pickle`: did not identify the image and returned
+  a statement that it could not view images. The workflow check failed despite a
+  normal prompt response. No automatic model fallback occurred.
+
+Protocol image support is necessary but not proof of model-level success. The
+example validates the answer independently of input-delivery evidence. Claude
+verification remains deferred. Native restoration policy, base-instruction authority,
+explicit omission policies, skills, and structured-result validation remain M3 work.

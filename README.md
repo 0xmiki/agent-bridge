@@ -25,6 +25,9 @@ do not rewrite that history. See [configuration](docs/configuration.md).
 [Context preparation](docs/context.md) resolves selected immutable records and
 resource revisions while preserving instruction roles. Recorded ACP runs can
 explicitly append supported text context and persist input receipts before dispatch.
+SQLite can retain immutable resource revisions with shared blobs. Explicit image
+delivery adds native image blocks and receipt digests without copying base64 into
+each saved transcript. Support still depends on the selected provider model.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared

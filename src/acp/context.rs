@@ -1,14 +1,19 @@
 use crate::context::{ContextLimits, PreparedContext, Resource, ResourceStore};
 use crate::records::{MessageKind, Payload};
 use crate::{Content, ContextManifest, InstructionRole, ResourceRef};
+use base64::Engine;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 /// Explicitly chooses user-level text context in addition to retained native context.
 /// This neither replaces native history nor establishes system-instruction authority.
 #[derive(Debug, Clone, Copy)]
-pub enum TextContextMode {
+pub enum ContextMode {
     AppendToNative,
+    /// Append supported image blocks as well as the text envelope.
+    AppendImagesToNative,
 }
+pub type TextContextMode = ContextMode;
 
 pub struct ContextTask<'a, R: ResourceStore> {
     pub prompt: &'a str,
@@ -16,7 +21,7 @@ pub struct ContextTask<'a, R: ResourceStore> {
     pub resources: &'a R,
     pub limits: ContextLimits,
     pub max_prompt_bytes: usize,
-    pub mode: TextContextMode,
+    pub mode: ContextMode,
 }
 
 fn reference(reference: &ResourceRef) -> Value {
@@ -47,7 +52,9 @@ pub(super) fn encode(
     context: &PreparedContext,
     prompt: &str,
     max_bytes: usize,
-) -> Result<(String, Value), super::RecordingError> {
+    images_allowed: bool,
+    image_capability: bool,
+) -> Result<(String, Vec<super::ContentBlock>, Value), super::RecordingError> {
     let mut instructions = vec![];
     for instruction in &context.instructions {
         if instruction.reference.role == InstructionRole::Base {
@@ -91,10 +98,59 @@ pub(super) fn encode(
             "actor":snapshot.record.actor.as_str(),"kind":kind,"state":state,"content":content}),
         );
     }
-    let resources = context.resources.iter().map(|resource| Ok(json!({
-        "reference":reference(&resource.reference),"media_type":resource.media_type,"text":text(resource)?
-    }))).collect::<Result<Vec<_>, super::RecordingError>>()?;
-    let envelope = json!({"encoding":"agent_bridge.text_context.v1","context_mode":"append_to_native",
+    let mut resources = vec![];
+    let mut images = vec![];
+    let mut image_refs = vec![];
+    let mut image_bytes = 0usize;
+    for resource in &context.resources {
+        if resource.media_type.starts_with("image/") {
+            if !images_allowed || !image_capability {
+                return Err(super::RecordingError::UnsupportedContext(
+                    "image delivery requires explicit mode and advertised image support",
+                ));
+            }
+            let bytes = resource.bytes.as_ref();
+            let valid = match resource.media_type.as_str() {
+                "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+                "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+                "image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+                _ => false,
+            };
+            if !valid {
+                return Err(super::RecordingError::UnsupportedContext(
+                    "unsupported image type or invalid signature",
+                ));
+            }
+            image_bytes = bytes
+                .len()
+                .checked_add(2)
+                .and_then(|n| (n / 3).checked_mul(4))
+                .and_then(|n| image_bytes.checked_add(n))
+                .filter(|n| *n <= max_bytes)
+                .ok_or(super::RecordingError::UnsupportedContext(
+                    "encoded prompt exceeds byte limit",
+                ))?;
+            let descriptor = json!({"reference":reference(&resource.reference),"media_type":resource.media_type,
+                "sha256":format!("{:x}",Sha256::digest(bytes)),"bytes":bytes.len(),"prompt_block":images.len()+1});
+            resources.push(descriptor.clone());
+            image_refs.push(descriptor);
+            images.push(super::ContentBlock::Image(
+                agent_client_protocol::schema::v1::ImageContent::new(
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                    &resource.media_type,
+                ),
+            ));
+        } else {
+            resources.push(json!({"reference":reference(&resource.reference),"media_type":resource.media_type,"text":text(resource)?}));
+        }
+    }
+    let encoding = if images.is_empty() {
+        "agent_bridge.text_context.v1"
+    } else {
+        "agent_bridge.media_context.v1"
+    };
+    let envelope = json!({"encoding":encoding,"context_mode":"append_to_native",
         "history":records,"supplemental_instructions":instructions,"resources":resources,"task":prompt});
     struct LimitedWriter {
         bytes: Vec<u8>,
@@ -121,7 +177,40 @@ pub(super) fn encode(
     })?;
     let wire = String::from_utf8(writer.bytes).expect("JSON serializer writes UTF-8");
     // Persist the exact wire text once, independent of resource-store retention.
-    let receipt = json!({"version":1,"state":"prepared","encoding":"agent_bridge.text_context.v1",
+    let mut receipt = json!({"version":1,"state":"prepared","encoding":encoding,
         "context_mode":"append_to_native","omissions":[],"wire_text":wire,"wire_bytes":wire.len()});
-    Ok((wire, receipt))
+    let mut blocks = vec![wire.clone().into()];
+    blocks.extend(images);
+    if !image_refs.is_empty() {
+        // Count serialized blocks without retaining a second copy of the base64 data.
+        struct Counter {
+            used: usize,
+            limit: usize,
+        }
+        impl std::io::Write for Counter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.used = self
+                    .used
+                    .checked_add(bytes.len())
+                    .filter(|n| *n <= self.limit)
+                    .ok_or(std::io::Error::other("prompt byte limit"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut counter = Counter {
+            used: 0,
+            limit: max_bytes,
+        };
+        serde_json::to_writer(&mut counter, &blocks).map_err(|_| {
+            super::RecordingError::UnsupportedContext("encoded prompt exceeds byte limit")
+        })?;
+        receipt["version"] = json!(2);
+        receipt["wire_bytes"] = json!(counter.used);
+        receipt["images"] = json!(image_refs);
+        receipt["resource_retention"] = json!("supplied_resource_store");
+    }
+    Ok((wire, blocks, receipt))
 }

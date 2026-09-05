@@ -339,17 +339,23 @@ impl<'connection> AcpSession<'connection> {
             std::slice::from_ref(&self.session_id),
             task.limits,
         )?;
-        let (wire, receipt) = match task.mode {
-            super::TextContextMode::AppendToNative => {
-                super::context::encode(&context, task.prompt, task.max_prompt_bytes)?
-            }
-        };
+        let (wire, blocks, receipt) = super::context::encode(
+            &context,
+            task.prompt,
+            task.max_prompt_bytes,
+            matches!(task.mode, super::ContextMode::AppendImagesToNative),
+            self.connection
+                .info
+                .agent_capabilities
+                .prompt_capabilities
+                .image,
+        )?;
         spec.context = context.manifest;
         let mut recorder =
             super::recording::Recorder::new(store, spec.clone(), task.prompt, actors)?;
         recorder.prepare_input(receipt)?;
         recorder.input_dispatch_attempted()?;
-        match self.dispatch(spec, wire) {
+        match self.dispatch_blocks(spec, wire, blocks) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
             Err(error) => {
                 recorder.interrupt(error.to_string())?;
@@ -422,6 +428,16 @@ impl<'connection> AcpSession<'connection> {
         spec: RunSpec,
         text: String,
     ) -> Result<AcpRun<'_, 'connection>, AcpError> {
+        let blocks = vec![text.clone().into()];
+        self.dispatch_blocks(spec, text, blocks)
+    }
+
+    fn dispatch_blocks(
+        &mut self,
+        spec: RunSpec,
+        text: String,
+        blocks: Vec<super::ContentBlock>,
+    ) -> Result<AcpRun<'_, 'connection>, AcpError> {
         if text.trim().is_empty() {
             return Err(AcpError::EmptyPrompt);
         }
@@ -458,10 +474,7 @@ impl<'connection> AcpSession<'connection> {
         let result = self
             .connection
             .connection
-            .send_request(PromptRequest::new(
-                self.info.session_id.clone(),
-                vec![text.clone().into()],
-            ))
+            .send_request(PromptRequest::new(self.info.session_id.clone(), blocks))
             .on_receiving_result(move |result| async move {
                 let mut route = completion_route.lock().unwrap();
                 route.cancel_permissions();

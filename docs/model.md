@@ -8,7 +8,7 @@ Implementation checkpoints: the core types and lifecycle now have tests; the
 optional [ACP adapter](acp.md) can create sessions and stream text runs using the
 shared lifecycle. [Recorded runs](records.md) assemble portable payloads through
 a provisional local store backed by memory or [SQLite](sqlite.md). SQLite now has
-schema version 3 while serialized record documents remain version 1. Native ACP
+schema version 4 while serialized record documents remain version 1. Native ACP
 [continuations](continuations.md) support explicit single-use handoff and resume.
 Durable execution and uncertain-outcome reconciliation remain open contracts.
 M1 adds [configuration discovery and attribution](configuration.md), model changes

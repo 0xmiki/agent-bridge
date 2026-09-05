@@ -30,6 +30,8 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   and separate core and records builds.
 - Text-context delivery and receipt verification add four tests, for 129 total.
   Real OpenCode and Codex checks retrieved selected history and reopened receipts.
+- Resource retention and image delivery now add six tests, for 135 total. SQLite
+  schema version 4 preserves earlier schemas; image receipt data uses version 2.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -150,7 +152,7 @@ First increment: [context preparation](docs/context.md) resolves selected immuta
 history and exact resource revisions, preserves instruction roles, and rejects
 unavailable inputs without dispatch. Memory resource storage is replaceable and
 shares resource bytes across references. The delivery increment below builds on
-this preparation layer; resource persistence and restoration policy remain open.
+this preparation layer; restoration policy remains open.
 
 The second increment adds explicit ACP text-context delivery and persisted input
 receipts. It rejects unsupported inputs before dispatch and keeps native context
@@ -159,15 +161,21 @@ and response evidence. Dropped/crashed runs do not become confirmed delivery.
 See [context delivery and receipts](docs/context.md) and
 [the runnable example](examples/acp_context.rs).
 
-Next slice: durable resource retention and image delivery with explicit provider
-capability checks. Native restoration policy, base-instruction authority, omission
-policies, skills, and structured output remain later M3 increments.
+The third increment adds transactional SQLite resource retention, shared blobs,
+and explicit ACP image delivery with capability and byte-limit checks. Image
+receipts reference retained bytes by revision and digest instead of copying base64.
+The [image example](examples/acp_image.rs) passed with Codex and OpenCode's MiMo model;
+OpenCode's default Big Pickle model did not pass. See [context evidence](docs/context.md).
+
+Next slice: explicit native continuation versus portable context restoration policy.
+Base-instruction authority, omission policies, skills, and structured output remain
+later M3 increments.
 
 - [x] Resolve explicit context manifests from stored records and resources.
 - [ ] Record what the bridge supplied, including instruction revisions and omissions.
 - [ ] Keep instructions, conversation history, and provider continuation distinct.
 - [ ] Support instruction changes with explicit authority and capability requirements.
-- [ ] Add resource storage and image input without repeatedly copying large assets.
+- [x] Add resource storage and image input without repeatedly copying large assets.
 - [ ] Define explicit native-resume versus portable-context restoration policies.
 - [ ] Add structured-result validation; distinguish native enforcement from validation
   of unconstrained output.

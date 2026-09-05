@@ -58,11 +58,12 @@ fn main() {
         r#"{"resume":{}}"#
     };
     let agent_version = std::env::var("BRIDGE_TEST_AGENT_VERSION").unwrap_or_else(|_| "1".into());
+    let image_support = std::env::var_os("BRIDGE_TEST_NO_IMAGES").is_none();
     if mode == "malformed" {
         println!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocolVersion\":\"bad\"}}}}");
     } else {
         println!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocolVersion\":{version},\"agentCapabilities\":{{\"loadSession\":true,\"promptCapabilities\":{{\"image\":true}},\"sessionCapabilities\":{sessions}}},\"agentInfo\":{{\"name\":\"fixture\",\"version\":\"{agent_version}\"}},\"authMethods\":[]}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocolVersion\":{version},\"agentCapabilities\":{{\"loadSession\":true,\"promptCapabilities\":{{\"image\":{image_support}}},\"sessionCapabilities\":{sessions}}},\"agentInfo\":{{\"name\":\"fixture\",\"version\":\"{agent_version}\"}},\"authMethods\":[]}}}}"
         );
     }
     io::stdout().flush().unwrap();

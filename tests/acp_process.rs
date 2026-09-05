@@ -777,6 +777,148 @@ fn actors() -> RecordActors {
     }
 }
 
+fn png_resource() -> agent_bridge::context::Resource {
+    use base64::Engine;
+    agent_bridge::context::Resource {
+        reference: agent_bridge::ResourceRef { id: agent_bridge::ResourceId::new("picture").unwrap(), revision: "v1".into() },
+        media_type: "image/png".into(),
+        bytes: std::sync::Arc::from(base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=").unwrap()),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn image_blocks_are_deduplicated_and_receipts_reference_retained_bytes() {
+    use agent_bridge::context::{ResourceArchive, ResourceStore};
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let files = TestFiles::new();
+    let path = files.path("images.sqlite3");
+    let log = files.path("messages");
+    let store = agent_bridge::records::SqliteStore::open(&path).unwrap();
+    let image = png_resource();
+    let reference = image.reference.clone();
+    store.put(image).unwrap();
+    let manifest = agent_bridge::ContextManifest {
+        resources: vec![reference.clone(), reference.clone()],
+        ..Default::default()
+    };
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_context_run(
+                RunId::new("image").unwrap(),
+                agent_bridge::acp::ContextTask {
+                    prompt: "Describe the image",
+                    manifest: &manifest,
+                    resources: &store,
+                    limits: agent_bridge::context::ContextLimits {
+                        max_items: 10,
+                        max_resource_bytes: 1024,
+                    },
+                    max_prompt_bytes: 4096,
+                    mode: agent_bridge::acp::ContextMode::AppendImagesToNative,
+                },
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    drop(store);
+    let reopened = agent_bridge::records::SqliteStore::open(path).unwrap();
+    let bytes = ResourceStore::get(&reopened, &reference).unwrap();
+    let receipts = input_receipts(&reopened);
+    assert!(receipts.iter().all(|receipt| receipt["version"] == 2));
+    assert_eq!(receipts[0]["images"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        receipts[0]["images"][0]["sha256"],
+        format!("{:x}", Sha256::digest(&bytes.bytes))
+    );
+    let messages = std::fs::read_to_string(log).unwrap();
+    let sent: serde_json::Value = messages
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|message| message["method"] == "session/prompt")
+        .unwrap();
+    let blocks = &sent["params"]["prompt"];
+    assert_eq!(blocks.as_array().unwrap().len(), 2);
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(blocks[1]["data"].as_str().unwrap())
+            .unwrap(),
+        bytes.bytes.as_ref()
+    );
+    assert!(
+        !receipts[0]
+            .to_string()
+            .contains(blocks[1]["data"].as_str().unwrap())
+    );
+    assert_eq!(
+        receipts[0]["wire_bytes"],
+        serde_json::to_vec(blocks).unwrap().len()
+    );
+}
+
+#[tokio::test]
+async fn unsupported_images_are_rejected_before_registration_or_dispatch() {
+    for case in ["capability", "mode", "signature", "budget"] {
+        let files = TestFiles::new();
+        let log = files.path("messages");
+        let mut launch = launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy());
+        if case == "capability" {
+            launch = launch.env("BRIDGE_TEST_NO_IMAGES", "1");
+        }
+        let connection = AcpConnection::connect(launch).await.unwrap();
+        let store = MemoryStore::default();
+        let resources = agent_bridge::context::MemoryResourceStore::default();
+        let mut image = png_resource();
+        if case == "signature" {
+            image.bytes = std::sync::Arc::from(b"not an image".as_slice());
+        }
+        let manifest = agent_bridge::ContextManifest {
+            resources: vec![image.reference.clone()],
+            ..Default::default()
+        };
+        resources.put(image).unwrap();
+        {
+            let mut session = new_session(&connection).await;
+            let mut task = context_task(&manifest, &resources);
+            if case != "mode" {
+                task.mode = agent_bridge::acp::ContextMode::AppendImagesToNative;
+            }
+            if case == "budget" {
+                task.max_prompt_bytes = 100;
+            }
+            assert!(matches!(
+                session.start_recorded_context_run(
+                    RunId::new("rejected").unwrap(),
+                    task,
+                    &store,
+                    actors()
+                ),
+                Err(RecordingError::UnsupportedContext(_))
+            ));
+            assert!(matches!(
+                store.get_run(&RunId::new("rejected").unwrap()),
+                Err(StoreError::MissingRun)
+            ));
+        }
+        connection.shutdown().await.unwrap();
+        assert!(
+            !std::fs::read_to_string(log)
+                .unwrap()
+                .contains("session/prompt")
+        );
+    }
+}
+
 fn context_task<'a>(
     manifest: &'a agent_bridge::ContextManifest,
     resources: &'a agent_bridge::context::MemoryResourceStore,

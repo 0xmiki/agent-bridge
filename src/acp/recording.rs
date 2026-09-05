@@ -100,6 +100,7 @@ pub(super) struct Recorder<'store, S: RecordStore> {
     finished: bool,
     last_configuration: Option<ConfigValues>,
     input_receipt: bool,
+    input_version: u64,
     input_response: bool,
 }
 
@@ -127,6 +128,7 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             finished: false,
             last_configuration,
             input_receipt: false,
+            input_version: 1,
             input_response: false,
         };
         this.insert(
@@ -148,6 +150,9 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
         &mut self,
         receipt: serde_json::Value,
     ) -> Result<(), RecordingError> {
+        self.input_version = receipt["version"]
+            .as_u64()
+            .expect("internal receipt version");
         self.input_evidence(receipt)?;
         self.input_receipt = true;
         Ok(())
@@ -169,7 +174,9 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
     }
 
     pub(super) fn input_dispatch_attempted(&mut self) -> Result<(), RecordingError> {
-        self.input_evidence(serde_json::json!({"version":1,"state":"dispatch_attempted"}))
+        self.input_evidence(
+            serde_json::json!({"version":self.input_version,"state":"dispatch_attempted"}),
+        )
     }
 
     fn draft(
@@ -447,7 +454,7 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             }
             AcpEvent::Finished(reason) => {
                 if self.input_receipt {
-                    self.input_evidence(serde_json::json!({"version":1,"state":"response_received","stop_reason":reason}))?;
+                    self.input_evidence(serde_json::json!({"version":self.input_version,"state":"response_received","stop_reason":reason}))?;
                     self.input_response = true;
                 }
                 let normalized = match reason {
@@ -519,7 +526,9 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             return Ok(());
         }
         if self.input_receipt && !self.input_response {
-            self.input_evidence(serde_json::json!({"version":1,"state":"unknown"}))?;
+            self.input_evidence(
+                serde_json::json!({"version":self.input_version,"state":"unknown"}),
+            )?;
         }
         self.insert(
             Payload::Failure { message },

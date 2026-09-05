@@ -26,7 +26,7 @@ Clones share one connection; separate handles can open the same file. Operations
 are synchronous and may wait up to five seconds for a write lock, so keep them off
 UI threads and account for blocking in async hosts. Lock contention returns `Busy`.
 
-## Schema version 3
+## Schema version 4
 
 | Table | Responsibility |
 | --- | --- |
@@ -36,6 +36,8 @@ UI threads and account for blocking in async hosts. Lock contention returns `Bus
 | `agent_bridge_records` | Attributed payloads, ordering, revisions, and original-insert data |
 | `agent_bridge_decisions` | One decision record for each resolved permission request |
 | `agent_bridge_continuations` | Single-use provider handoffs and successor chains |
+| `agent_bridge_resource_versions` | Immutable resource ID/revision, media type, and blob digest |
+| `agent_bridge_resource_blobs` | One binary blob per SHA-256 digest |
 
 Version 1 adds records in
 [0001_records.sql](../src/records/sqlite/migrations/0001_records.sql). Version 2 adds
@@ -46,6 +48,8 @@ Version 3 adds run configuration and continuation links in
 [0003_run_configuration.sql](../src/records/sqlite/migrations/0003_run_configuration.sql).
 Older runs keep unknown configuration and a null continuation link. Record JSON
 format remains version 1.
+Version 4 adds immutable resource storage in
+[0004_resources.sql](../src/records/sqlite/migrations/0004_resources.sql).
 Slots remain
 host configuration; this record store persists their references, not executables,
 or credentials. Run rows now preserve configuration reports independently of slot
@@ -117,11 +121,32 @@ corruption, rollback after an injected SQL failure, and independent-connection r
 ACP fixture runs also read transcripts and resume a saved continuation after SQLite
 reopens.
 
-The public API can keep improving, but SQL schema versions 1 through 3 and JSON format 1
+The public API can keep improving, but SQL schema versions 1 through 4 and JSON format 1
 are now compatibility obligations. New schema steps belong in migrations. New JSON
 formats need an explicit upgrade or a retained old-version decoder. Async access,
 configurable lock timeouts,
-resource retention, and uncertain-outcome reconciliation remain open design questions.
+resource deletion/garbage collection, and uncertain-outcome reconciliation remain open design questions.
+
+## Resource retention
+
+`SqliteStore` also implements the independent `ResourceStore` and `ResourceArchive`
+traits from `agent_bridge::context`. Import `ResourceArchive` to call `store.put(resource)`.
+If both read traits are imported, use `ResourceStore::get(&store, &reference)` to
+distinguish resource lookup from `RecordStore::get`.
+
+Identical writes at one resource revision are idempotent. Different bytes or media
+types at that revision are rejected. Different revisions or resource IDs can share
+one blob when their bytes match. Blob insertion and revision registration use one
+IMMEDIATE transaction; a failed revision insert leaves no new orphan blob. Separate
+connections serialize competing writes, so a revision has one immutable winner.
+Reads verify the blob digest and report missing or mismatched blobs as corruption.
+
+Resource revision labels remain application-assigned; the blob digest is a separate
+integrity and storage-sharing mechanism. This store has no automatic deletion or
+garbage collection. It does not authenticate callers or enforce per-session resource
+access. Use an appropriately scoped store in applications that need that boundary.
+Resources are loaded into memory on read; applications can use a custom store for
+other retention or allocation requirements.
 
 References: [SQLite transactions](https://www.sqlite.org/lang_transaction.html) and
 [rusqlite](https://docs.rs/rusqlite/0.40.2/rusqlite/).

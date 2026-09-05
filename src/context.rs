@@ -18,6 +18,7 @@ pub struct Resource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceError {
+    Store(StoreError),
     Missing,
     Invalid,
     RevisionConflict,
@@ -34,6 +35,17 @@ impl Error for ResourceError {}
 /// Access control and retention belong to the application's store implementation.
 pub trait ResourceStore: Send + Sync {
     fn get(&self, reference: &ResourceRef) -> Result<Arc<Resource>, ResourceError>;
+}
+
+/// Optional write contract. Retention and durability are properties of the store.
+pub trait ResourceArchive: ResourceStore {
+    fn put(&self, resource: Resource) -> Result<Arc<Resource>, ResourceError>;
+}
+
+impl ResourceArchive for MemoryResourceStore {
+    fn put(&self, resource: Resource) -> Result<Arc<Resource>, ResourceError> {
+        MemoryResourceStore::put(self, resource)
+    }
 }
 
 type ResourceKey = (ResourceId, String);

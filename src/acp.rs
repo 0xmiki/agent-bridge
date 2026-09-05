@@ -9,7 +9,7 @@
 
 mod configuration;
 mod context;
-pub use context::{ContextTask, TextContextMode};
+pub use context::{ContextMode, ContextTask, TextContextMode};
 mod continuation;
 mod recording;
 mod session;
