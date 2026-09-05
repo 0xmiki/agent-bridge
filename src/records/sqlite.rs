@@ -14,6 +14,7 @@ use std::{
 const MIGRATIONS: &[&str] = &[
     include_str!("sqlite/migrations/0001_records.sql"),
     include_str!("sqlite/migrations/0002_continuations.sql"),
+    include_str!("sqlite/migrations/0003_run_configuration.sql"),
 ];
 const RECORD_COLUMNS: &str = "id, session_id, run_id, sequence, actor_id, reply_to_id, source_json, payload_json, state, revision, initial_json";
 
@@ -126,7 +127,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     // Validate the expected table/column surface even when no migration was needed.
     for query in [
         "SELECT id, next_sequence FROM agent_bridge_sessions LIMIT 0",
-        "SELECT id, session_id, slot_id, context_json FROM agent_bridge_runs LIMIT 0",
+        "SELECT id, session_id, slot_id, context_json, config_json, continuation_id FROM agent_bridge_runs LIMIT 0",
         "SELECT request_id, response_id FROM agent_bridge_decisions LIMIT 0",
         "SELECT id, session_id, adapter, scope, native_key, predecessor_id, descriptor_json, state, latest FROM agent_bridge_continuations LIMIT 0",
     ] {
@@ -272,25 +273,31 @@ fn session_sequence(connection: &Connection, session: &SessionId) -> Result<i64,
 fn read_run(connection: &Connection, run: &RunId) -> Result<Option<RunSpec>, StoreError> {
     let data = connection
         .query_row(
-            "SELECT session_id, slot_id, context_json FROM agent_bridge_runs WHERE id = ?1",
+            "SELECT session_id, slot_id, context_json, config_json, continuation_id FROM agent_bridge_runs WHERE id = ?1",
             [run.as_str()],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
                 ))
             },
         )
         .optional()
         .map_err(database_error)?;
-    data.map(|(session, slot, context)| {
+    data.map(|(session, slot, context, config, continuation)| {
         Ok(RunSpec {
             id: run.clone(),
             session_id: id(session)?,
             slot_id: id::<SlotId>(slot)?,
             context: codec::decode::<ContextManifest>(&context)?,
-            config: (),
+            config: config
+                .map(|data| codec::decode(&data))
+                .transpose()?
+                .unwrap_or_default(),
+            continuation: continuation.map(id).transpose()?,
         })
     })
     .transpose()
@@ -398,12 +405,19 @@ impl RecordStore for SqliteStore {
                 return if existing == spec { Ok(false) } else { Err(StoreError::IdentityConflict) };
             }
             session_sequence(connection, &spec.session_id)?;
+            if let Some(id) = &spec.continuation {
+                let saved = continuation::read(connection, id)?.ok_or(StoreError::MissingContinuation)?;
+                if saved.state != ContinuationState::Claimed || !saved.latest
+                    || saved.continuation.session_id != spec.session_id || saved.continuation.slot_id != spec.slot_id {
+                    return Err(StoreError::InvalidContinuation);
+                }
+            }
             for id in &spec.context.records {
                 let existing = entry(connection, id)?.ok_or(StoreError::MissingRecord)?;
                 if !existing.current.state.is_final() { return Err(StoreError::OpenContextRecord); }
             }
-            connection.execute("INSERT INTO agent_bridge_runs (id, session_id, slot_id, context_json) VALUES (?1, ?2, ?3, ?4)",
-                params![spec.id.as_str(), spec.session_id.as_str(), spec.slot_id.as_str(), codec::encode(&spec.context)?])
+            connection.execute("INSERT INTO agent_bridge_runs (id, session_id, slot_id, context_json, config_json, continuation_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![spec.id.as_str(), spec.session_id.as_str(), spec.slot_id.as_str(), codec::encode(&spec.context)?, codec::encode(&spec.config)?, spec.continuation.as_ref().map(crate::ContinuationId::as_str)])
                 .map_err(database_error)?;
             Ok(true)
         })

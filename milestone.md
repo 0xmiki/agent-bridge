@@ -19,13 +19,15 @@ tool use must also work in examples independent of those applications.
 
 ## Current position
 
-Status checked against `10b9113` on September 5, 2026.
+Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
 
-- M0 is complete within the scope below.
-- **M1 is the next target. Implementation has not started.**
-- The last implementation verification passed 90 tests, Clippy, documentation
+- M0 and M1 are complete within the scopes below.
+- **M2 is the next target. Implementation has not started.**
+- The last implementation verification passed 105 tests, Clippy, documentation
   generation, and the core, records, ACP, and SQLite feature builds.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
+- Its model-selection interface also passed a two-model context-continuity check
+  with persisted per-run settings.
 - Codex and Claude compatibility, TypeScript, Tauri integration, and app migrations
   have not been implemented or verified yet.
 
@@ -35,8 +37,8 @@ been released. M8 defines the first release gate.
 | Milestone | Outcome | Status | Depends on |
 | --- | --- | --- | --- |
 | M0 | Execution and persistence foundation | Complete | — |
-| M1 | Model selection and attributable run configuration | Next | M0 |
-| M2 | Verified multi-provider integration and setup | Planned | M1 |
+| M1 | Model selection and attributable run configuration | Complete | M0 |
+| M2 | Verified multi-provider integration and setup | Next | M1 |
 | M3 | Explicit context, instructions, and rich tasks | Planned | M2 |
 | M4 | Application tools, authority, and execution composition | Planned | M3 |
 | M5 | Durable execution bookkeeping and bounded recovery | Planned | M4 |
@@ -65,30 +67,38 @@ Evidence: [ACP adapter](src/acp.rs), [records](src/records.rs),
 and [tests](tests). Commits `a9af0c0` through `10b9113` contain these increments.
 
 Completion here does not mean general crash recovery. Continuations are conservative
-single-use handoffs. The runtime cannot yet reconcile an uncertain claim, transfer
-context to another provider, or confirm configuration for each run.
+single-use handoffs. The runtime cannot yet reconcile an uncertain claim or transfer
+context to another provider. Configuration attribution was added in M1.
 
 ## M1 — Model selection and run configuration
 
 Make configuration discoverable and record what an execution requested and what
 the provider confirmed.
 
-- [ ] Expose supported session configuration options through a documented API.
-- [ ] Validate model and option selections before dispatch.
-- [ ] Define requested, confirmed, and unknown configuration states.
-- [ ] Persist per-run configuration without rewriting earlier runs or records.
-- [ ] Apply model changes between runs, with explicit behavior for unsupported changes.
-- [ ] Link runs to the continuation they consume when one is available.
-- [ ] Add required migrations and preserve existing persisted data.
-- [ ] Verify switching between two available models while retaining a thread's context.
+- [x] Expose supported session configuration options through a documented API.
+- [x] Validate model and option selections before dispatch.
+- [x] Define requested, confirmed, and unknown configuration states.
+- [x] Persist per-run configuration without rewriting earlier runs or records.
+- [x] Apply model changes between runs, with explicit behavior for unsupported changes.
+- [x] Link runs to the originating claimed continuation when one is available.
+- [x] Add required migrations and preserve existing persisted data.
+- [x] Verify switching between two available models while retaining a thread's context.
 
 Done when a runnable example changes models between turns, history keeps the same
 application session, each run's configuration remains inspectable after reopening,
 and invalid or unsupported settings cannot silently disappear. Provider-confirmed
 settings must remain distinguishable from unverified defaults.
 
-First implementation slices: configuration discovery, validated selection, then
-per-run configuration persistence and the model-switching example.
+Evidence: [configuration contract](docs/configuration.md),
+[core types](src/configuration.rs), [ACP implementation](src/acp/configuration.rs),
+[schema migration](src/records/sqlite/migrations/0003_run_configuration.sql), and
+[model-switching example](examples/acp_models.rs).
+
+The real check switched `opencode/big-pickle` to `opencode/mimo-v2.5-free` in one
+native session. The second model recalled the first turn's phrase, and both run
+configurations survived SQLite reopen. Tests cover invalid choices, dependent
+settings, unknown reports, late acknowledgements, immutable history, and continuation
+ownership. Confirmation means provider-reported settings, not model identity attestation.
 
 ## M2 — Verified multi-provider integration and setup
 
@@ -223,3 +233,6 @@ The extension boundaries should leave room for them without requiring them now.
 - September 5, 2026: established this roadmap from shipped commits and the agreed
   philosophy. Configuration and provider compatibility come before the application
   SDKs; app migrations and the public alpha now have explicit completion criteria.
+- September 5, 2026: completed M1 with model selection, configuration attribution,
+  continuation-origin links, and SQL schema version 3. M2 is now next. Record JSON
+  remains version 1; legacy runs retain unknown settings instead of inferred values.

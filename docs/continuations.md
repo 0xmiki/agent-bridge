@@ -112,7 +112,8 @@ logs. Provider credentials remain in the provider's own authentication mechanism
 - Discovering which provider upgrades can safely resume older native sessions.
 - Recording an affirmative provider checkpoint or synchronization boundary.
 - Reconciling a claimed handle after a host crash when the provider can report state.
-- Linking each run to the exact continuation it consumed and produced.
+- Linking produced handoffs to completed work. Runs now store their native session's
+  originating continuation without re-claiming it for every turn.
 - Choosing and restoring portable context when native resume is unavailable.
 - Close, load-with-replay, fork, and provider-managed subagent relationships.
 

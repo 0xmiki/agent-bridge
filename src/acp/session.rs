@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 use agent_client_protocol::{
@@ -13,10 +13,7 @@ use agent_client_protocol::{
         SessionNotification, SessionUpdate, StopReason,
     },
 };
-use tokio::{
-    sync::{mpsc, watch},
-    time::timeout,
-};
+use tokio::sync::{mpsc, watch};
 
 use super::{AcpConnection, AcpError};
 use crate::records::{DecisionDelivery, PermissionOutcome};
@@ -122,6 +119,8 @@ pub(super) struct Routes {
     fault: watch::Sender<bool>,
     pub(super) sessions: HashSet<NativeSessionId>,
     active: HashMap<NativeSessionId, Arc<Mutex<Route>>>,
+    pub(super) configurations:
+        HashMap<NativeSessionId, Weak<Mutex<super::configuration::ConfigurationState>>>,
 }
 
 impl Routes {
@@ -130,6 +129,7 @@ impl Routes {
             fault,
             sessions: HashSet::new(),
             active: HashMap::new(),
+            configurations: HashMap::new(),
         }
     }
 }
@@ -138,6 +138,17 @@ pub(super) fn route_update(
     routes: &Mutex<Routes>,
     notification: SessionNotification,
 ) -> Result<(), agent_client_protocol::Error> {
+    if let SessionUpdate::ConfigOptionUpdate(update) = &notification.update {
+        let state = routes
+            .lock()
+            .unwrap()
+            .configurations
+            .get(&notification.session_id)
+            .and_then(Weak::upgrade);
+        if let Some(state) = state {
+            state.lock().unwrap().observe(&update.config_options);
+        }
+    }
     let route = routes
         .lock()
         .unwrap()
@@ -226,6 +237,7 @@ pub struct AcpSession<'connection> {
     pub(super) cwd: PathBuf,
     pub(super) predecessor: Option<crate::ContinuationId>,
     pub(super) quiescent: bool,
+    pub(super) configuration: Arc<Mutex<super::configuration::ConfigurationState>>,
 }
 
 impl AcpConnection {
@@ -246,15 +258,12 @@ impl AcpConnection {
             return Err(AcpError::Closed);
         }
         self.validate_mcp(&mcp_servers)?;
-        let info = timeout(
-            self.session_timeout,
-            self.connection
-                .send_request(NewSessionRequest::new(cwd.clone()).mcp_servers(mcp_servers))
-                .block_task(),
-        )
-        .await
-        .map_err(|_| AcpError::RequestTimedOut)?
-        .map_err(AcpError::Protocol)?;
+        let (info, configuration) = self
+            .setup_configuration(
+                NewSessionRequest::new(cwd.clone()).mcp_servers(mcp_servers),
+                |response| response,
+            )
+            .await?;
         if !self
             .routes
             .lock()
@@ -273,6 +282,7 @@ impl AcpConnection {
             cwd,
             predecessor: None,
             quiescent: true,
+            configuration,
         })
     }
 
@@ -317,15 +327,9 @@ impl<'connection> AcpSession<'connection> {
         if self.connection.is_closed() {
             return Err(AcpError::Closed.into());
         }
-        let spec = RunSpec {
-            id: id.clone(),
-            session_id: self.session_id.clone(),
-            slot_id: self.slot_id.clone(),
-            context: ContextManifest::default(),
-            config: (),
-        };
-        let mut recorder = super::recording::Recorder::new(store, spec, &text, actors)?;
-        match self.start_run(id, text) {
+        let spec = self.run_spec(id)?;
+        let mut recorder = super::recording::Recorder::new(store, spec.clone(), &text, actors)?;
+        match self.dispatch(spec, text) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
             Err(error) => {
                 recorder.interrupt(error.to_string())?;
@@ -340,14 +344,34 @@ impl<'connection> AcpSession<'connection> {
 
     /// Start a text-only run. Callers assign unique run IDs.
     ///
-    /// ACP retains this native session's prior context. This first API supplies only
-    /// the new text; it does not resolve a stored context manifest or change models.
+    /// ACP retains this native session's prior context. The run freezes the latest
+    /// configuration report and supplies new text. Set options before starting it;
+    /// stored context manifests are not resolved by this API.
     pub fn start_run(
         &mut self,
         id: RunId,
         text: impl Into<String>,
     ) -> Result<AcpRun<'_, 'connection>, AcpError> {
-        let text = text.into();
+        let spec = self.run_spec(id)?;
+        self.dispatch(spec, text.into())
+    }
+
+    fn run_spec(&self, id: RunId) -> Result<RunSpec, AcpError> {
+        Ok(RunSpec {
+            id,
+            session_id: self.session_id.clone(),
+            slot_id: self.slot_id.clone(),
+            context: ContextManifest::default(),
+            config: self.configuration.lock().unwrap().for_run()?,
+            continuation: self.predecessor.clone(),
+        })
+    }
+
+    fn dispatch(
+        &mut self,
+        spec: RunSpec,
+        text: String,
+    ) -> Result<AcpRun<'_, 'connection>, AcpError> {
         if text.trim().is_empty() {
             return Err(AcpError::EmptyPrompt);
         }
@@ -357,11 +381,14 @@ impl<'connection> AcpSession<'connection> {
         if self.connection.is_closed() {
             return Err(AcpError::Closed);
         }
+        if self.configuration.lock().unwrap().for_run()? != spec.config {
+            return Err(AcpError::ConfigurationChanged);
+        }
         let (sender, receiver) = mpsc::channel(EVENT_CAPACITY);
         self.quiescent = false;
         let route = Arc::new(Mutex::new(Route {
             fault: self.connection.routes.lock().unwrap().fault.clone(),
-            run_id: id.clone(),
+            run_id: spec.id.clone(),
             sender,
             pending: HashMap::new(),
             next_permission: 0,
@@ -375,13 +402,7 @@ impl<'connection> AcpSession<'connection> {
             .unwrap()
             .active
             .insert(self.info.session_id.clone(), route.clone());
-        let mut run = Run::new(RunSpec {
-            id,
-            session_id: self.session_id.clone(),
-            slot_id: self.slot_id.clone(),
-            context: ContextManifest::default(),
-            config: (),
-        });
+        let mut run = Run::new(spec);
         run.apply(RunEvent::DispatchStarted).unwrap();
         let completion_route = route.clone();
         let result = self

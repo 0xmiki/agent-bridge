@@ -76,6 +76,8 @@ dropping the run handle, another run can continue the same native session. Disti
 native sessions can execute concurrently through the connection. Application and
 native session IDs remain separate; multiple native sessions may contribute to one
 application session. `session.info()` exposes the initial native configuration.
+`session.configuration()` exposes the live normalized catalog. Model and option
+selection between runs is documented in [configuration](configuration.md).
 
 `run.run()` exposes the shared run state and IDs; `run.input()` exposes its new text
 input. The run starts in `Starting`, becomes `Running` when activity is observed,
@@ -160,9 +162,10 @@ records in a memory or [SQLite store](sqlite.md). Persisted transcripts remain s
 from native context. The [continuation API](continuations.md) can hand off and resume
 an ACP session when the agent advertises `sessionCapabilities.resume`.
 
-Model selection, instruction injection, image input, native load/close, structured
-output, and other client requests remain outside this step. Updates outside active
-runs are not retained. Capability tests must establish those behaviors before the
+Instruction injection, image input, native load/close, structured
+output, and other client requests remain outside this step. Configuration updates
+outside active runs update the session catalog; other idle updates are not retained.
+Capability tests must establish additional behaviors before the
 adapter claims support. Timed-out setup requests are not retried or adopted later.
 After a continuation claim, a setup timeout permanently consumes that handle.
 

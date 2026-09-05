@@ -9,7 +9,8 @@ fn spec(id: &str, session: &str) -> RunSpec {
         session_id: SessionId::new(session).unwrap(),
         slot_id: SlotId::new("slot").unwrap(),
         context: ContextManifest::default(),
-        config: (),
+        config: Default::default(),
+        continuation: None,
     }
 }
 fn store() -> std::sync::Arc<dyn RecordStore> {
@@ -299,4 +300,34 @@ fn concurrent_inserts_get_unique_session_sequences() {
         .map(|s| s.record.sequence)
         .collect();
     assert_eq!(sequences, (0..16).collect::<Vec<_>>());
+}
+
+#[test]
+fn run_configuration_is_attributed_and_immutable() {
+    use agent_bridge::{ConfigValue, RunConfiguration};
+    let store = store();
+    let mut run = spec("configured", "s");
+    run.config = RunConfiguration {
+        requested: [(
+            "model".into(),
+            ConfigValue::Select("requested-model".into()),
+        )]
+        .into(),
+        confirmed: Some(
+            [
+                ("model".into(), ConfigValue::Select("reported-model".into())),
+                ("toggle".into(), ConfigValue::Boolean(true)),
+            ]
+            .into(),
+        ),
+    };
+    assert_eq!(store.register_run(run.clone()), Ok(true));
+    assert_eq!(store.get_run(&run.id).unwrap(), run);
+    let mut changed = run.clone();
+    changed.config.confirmed = None;
+    assert_eq!(
+        store.register_run(changed),
+        Err(StoreError::IdentityConflict)
+    );
+    assert_eq!(store.get_run(&run.id).unwrap(), run);
 }

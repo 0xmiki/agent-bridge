@@ -114,3 +114,47 @@ fn descriptors_are_immutable_and_bound_to_existing_sessions() {
         Err(StoreError::MissingContinuation)
     );
 }
+
+#[test]
+fn runs_link_only_to_claimed_current_continuations_with_matching_ownership() {
+    use agent_bridge::{ContextManifest, RunId, RunSpec};
+    let store = fresh_store();
+    let descriptor = descriptor("origin");
+    store.create_session(descriptor.session_id.clone()).unwrap();
+    store.save_continuation(descriptor.clone()).unwrap();
+    let run = RunSpec {
+        id: RunId::new("continued").unwrap(),
+        session_id: descriptor.session_id.clone(),
+        slot_id: descriptor.slot_id.clone(),
+        context: ContextManifest::default(),
+        config: Default::default(),
+        continuation: Some(descriptor.id.clone()),
+    };
+    assert_eq!(
+        store.register_run(run.clone()),
+        Err(StoreError::InvalidContinuation)
+    );
+    store.claim_continuation(&descriptor.id).unwrap();
+    let mut wrong = run.clone();
+    wrong.slot_id = SlotId::new("other").unwrap();
+    assert_eq!(
+        store.register_run(wrong),
+        Err(StoreError::InvalidContinuation)
+    );
+    assert_eq!(store.register_run(run.clone()), Ok(true));
+    assert_eq!(
+        store.get_run(&run.id).unwrap().continuation,
+        Some(descriptor.id.clone())
+    );
+    let mut successor = descriptor.clone();
+    successor.id = ContinuationId::new("successor").unwrap();
+    successor.predecessor = Some(descriptor.id);
+    store.save_continuation(successor).unwrap();
+    assert_eq!(store.get_run(&run.id).unwrap(), run);
+    let mut stale = run;
+    stale.id = RunId::new("stale").unwrap();
+    assert_eq!(
+        store.register_run(stale),
+        Err(StoreError::InvalidContinuation)
+    );
+}

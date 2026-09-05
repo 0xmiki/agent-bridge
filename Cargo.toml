@@ -35,3 +35,7 @@ required-features = ["sqlite"]
 [[example]]
 name = "acp_resume"
 required-features = ["acp", "sqlite"]
+
+[[example]]
+name = "acp_models"
+required-features = ["acp", "sqlite"]

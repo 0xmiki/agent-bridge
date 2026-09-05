@@ -2,7 +2,7 @@
 
 Working implementation. `MemoryStore` is process-local and loses its data when the
 application exits. The optional [SQLite adapter](sqlite.md) persists records across
-restarts. Its SQL schema is version 2 and record JSON remains version 1. Future format
+restarts. Its SQL schema is version 3 and record JSON remains version 1. Future format
 changes need explicit compatibility handling while the public API evolves.
 
 ## Recorded runs
@@ -95,8 +95,9 @@ Total retained history is not bounded by this in-memory adapter.
 
 The store validates record references. Resource resolution, access control, deletion,
 and cross-session context authorization remain separate work. Run registrations
-contain identity and requested core data, not a durable execution scheduler or
-confirmed model configuration.
+contain identity, requested and provider-reported configuration, and the originating
+continuation when available. They are not a durable execution scheduler. See
+[configuration](configuration.md) for the report's scope and uncertainty.
 
 ## Decisions and failure boundaries
 
@@ -118,7 +119,7 @@ return storage failures. No background retry proves an unknown action did not ha
 ## Next questions
 
 - Future schema and data-version migrations while preserving version 1 files.
-- Linking runs to the [continuations](continuations.md) they consume and produce.
+- Linking produced handoffs to completed work beyond the existing continuation-origin reference.
 - Whether local and remote stores should share an async interface.
 - Resource deduplication and retention for large content.
 - Atomic execution intent, decision delivery, and crash recovery.

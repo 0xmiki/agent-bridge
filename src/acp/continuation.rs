@@ -78,30 +78,28 @@ impl AcpConnection {
             self.routes.lock().unwrap().sessions.remove(&native);
             return Err(AcpError::Store(error));
         }
-        let response = tokio::time::timeout(
-            self.session_timeout,
-            self.connection
-                .send_request(
-                    ResumeSessionRequest::new(native.clone(), data.cwd.clone())
-                        .mcp_servers(mcp_servers),
-                )
-                .block_task(),
-        )
-        .await
-        .map_err(|_| AcpError::RequestTimedOut)?
-        .map_err(AcpError::Protocol)?;
+        let (info, configuration) = self
+            .setup_configuration(
+                ResumeSessionRequest::new(native.clone(), data.cwd.clone())
+                    .mcp_servers(mcp_servers),
+                move |response| {
+                    NewSessionResponse::new(native)
+                        .modes(response.modes)
+                        .config_options(response.config_options)
+                        .meta(response.meta)
+                },
+            )
+            .await?;
         Ok(AcpSession {
             connection: self,
             session_id: descriptor.session_id.clone(),
             slot_id: descriptor.slot_id.clone(),
-            info: NewSessionResponse::new(native)
-                .modes(response.modes)
-                .config_options(response.config_options)
-                .meta(response.meta),
+            info,
             retired: false,
             cwd: data.cwd,
             predecessor: Some(id.clone()),
             quiescent: true,
+            configuration,
         })
     }
 }
@@ -118,6 +116,7 @@ impl AcpSession<'_> {
         if self.retired || !self.quiescent {
             return Err(AcpError::UnsafeHandoff);
         }
+        self.configuration.lock().unwrap().for_run()?;
         if self.connection.is_closed() {
             return Err(AcpError::Closed);
         }

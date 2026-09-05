@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         config: "model-a",
+        continuation: None,
     });
     first.apply(RunEvent::DispatchStarted)?;
     first.apply(RunEvent::Started)?;
@@ -64,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         config: "model-b",
+        continuation: None,
     });
 
     assert_eq!(first.spec().session_id, second.spec().session_id);

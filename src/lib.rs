@@ -13,9 +13,13 @@ pub mod acp;
 #[cfg(feature = "records")]
 pub mod records;
 
+mod configuration;
 mod id;
 mod model;
 mod run;
+pub use configuration::{
+    ConfigChoice, ConfigOption, ConfigValue, ConfigValues, RunConfiguration, SessionConfiguration,
+};
 
 pub use id::{ActorId, ContinuationId, InvalidId, RecordId, ResourceId, RunId, SessionId, SlotId};
 pub use model::{

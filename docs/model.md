@@ -8,9 +8,11 @@ Implementation checkpoints: the core types and lifecycle now have tests; the
 optional [ACP adapter](acp.md) can create sessions and stream text runs using the
 shared lifecycle. [Recorded runs](records.md) assemble portable payloads through
 a provisional local store backed by memory or [SQLite](sqlite.md). SQLite now has
-schema version 2 while serialized record documents remain version 1. Native ACP
+schema version 3 while serialized record documents remain version 1. Native ACP
 [continuations](continuations.md) support explicit single-use handoff and resume.
 Durable execution and uncertain-outcome reconciliation remain open contracts.
+M1 adds [configuration discovery and attribution](configuration.md), model changes
+between runs, and links to a resumed session's originating continuation.
 
 ## Four concepts
 
@@ -136,8 +138,8 @@ queue. Worker claims and leases need a separate contract if we add that capabili
   semantics do the released ACP adapters actually preserve?
 - How should context manifests describe native context we cannot inspect?
 - What provider evidence can reconcile a claimed continuation after a crash?
-- How should run configuration expose provider-specific options without leaking
-  transport details into every application?
+- Which additional provider configuration mechanisms need to map into the current
+  option catalog and immutable run snapshots?
 - Which lifecycle facts can we observe for native subagents, and how do we represent
   partial visibility without inventing state?
 - What minimal storage operations preserve these rules across memory and SQL?

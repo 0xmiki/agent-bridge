@@ -26,13 +26,13 @@ Clones share one connection; separate handles can open the same file. Operations
 are synchronous and may wait up to five seconds for a write lock, so keep them off
 UI threads and account for blocking in async hosts. Lock contention returns `Busy`.
 
-## Schema version 2
+## Schema version 3
 
 | Table | Responsibility |
 | --- | --- |
 | `agent_bridge_schema` | This package's migration version |
 | `agent_bridge_sessions` | Session identity and next record sequence |
-| `agent_bridge_runs` | Execution identity, session, slot reference, and context |
+| `agent_bridge_runs` | Execution identity, session, slot, context, configuration, and continuation origin |
 | `agent_bridge_records` | Attributed payloads, ordering, revisions, and original-insert data |
 | `agent_bridge_decisions` | One decision record for each resolved permission request |
 | `agent_bridge_continuations` | Single-use provider handoffs and successor chains |
@@ -42,9 +42,14 @@ Version 1 adds records in
 continuations in
 [0002_continuations.sql](../src/records/sqlite/migrations/0002_continuations.sql).
 Opening a version 1 database upgrades it transactionally and preserves its records.
+Version 3 adds run configuration and continuation links in
+[0003_run_configuration.sql](../src/records/sqlite/migrations/0003_run_configuration.sql).
+Older runs keep unknown configuration and a null continuation link. Record JSON
+format remains version 1.
 Slots remain
 host configuration; this record store persists their references, not executables,
-credentials, or confirmed model settings.
+or credentials. Run rows now preserve configuration reports independently of slot
+defaults, without claiming that reports attest the remote model's actual identity.
 
 Tables and indexes use the reserved `agent_bridge_` prefix. Application tables,
 `PRAGMA user_version`, and journal mode are not changed. The adapter uses its own
@@ -112,7 +117,7 @@ corruption, rollback after an injected SQL failure, and independent-connection r
 ACP fixture runs also read transcripts and resume a saved continuation after SQLite
 reopens.
 
-The public API can keep improving, but SQL schema versions 1 and 2 and JSON format 1
+The public API can keep improving, but SQL schema versions 1 through 3 and JSON format 1
 are now compatibility obligations. New schema steps belong in migrations. New JSON
 formats need an explicit upgrade or a retained old-version decoder. Async access,
 configurable lock timeouts,

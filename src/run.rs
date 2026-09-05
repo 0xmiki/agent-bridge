@@ -1,19 +1,22 @@
 use std::{error::Error, fmt};
 
-use crate::{ContextManifest, RunId, SessionId, SlotId};
+use crate::{ContextManifest, ContinuationId, RunConfiguration, RunId, SessionId, SlotId};
 
 /// A caller-prepared assignment, frozen when moved into a run.
 ///
-/// `C` holds requested configuration, such as a model selection. It is not
-/// evidence of the configuration a provider actually used. Authority and
-/// continuation contracts are intentionally deferred; this type cannot dispatch work.
+/// The default configuration captures application selections and the provider's
+/// report at dispatch. It does not attest the remote model's actual execution.
+/// A continuation identifies the native session's origin, not a per-run re-claim.
+/// This type alone does not dispatch work or enforce authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunSpec<C = ()> {
+pub struct RunSpec<C = RunConfiguration> {
     pub id: RunId,
     pub session_id: SessionId,
     pub slot_id: SlotId,
     pub context: ContextManifest,
     pub config: C,
+    /// The claimed continuation from which this native session was resumed.
+    pub continuation: Option<ContinuationId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +77,7 @@ impl Error for InvalidTransition {}
 
 /// In-memory lifecycle of one bridge-managed execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Run<C = ()> {
+pub struct Run<C = RunConfiguration> {
     spec: RunSpec<C>,
     status: RunStatus,
     cancellation_requested: bool,

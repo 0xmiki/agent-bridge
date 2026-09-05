@@ -17,7 +17,7 @@ use agent_bridge::records::{
     ContinuationState, ContinuationStore, MemoryStore, MessageKind, Payload, PermissionOutcome,
     RecordState, RecordStore, StoreError,
 };
-use agent_bridge::{ActorId, Content, ContinuationId};
+use agent_bridge::{ActorId, ConfigValue, Content, ContinuationId};
 use agent_bridge::{RunId, RunStatus, SessionId, SlotId};
 use agent_client_protocol::schema::v1::{
     ContentBlock, McpServer, McpServerHttp, McpServerStdio, SessionUpdate, StopReason,
@@ -1434,9 +1434,284 @@ async fn resumes_an_acp_handoff_after_the_sqlite_store_is_reopened() {
             .unwrap();
         assert_eq!(session.info().session_id, native_id);
         let mut run = session
-            .start_run(RunId::new("after-sqlite-reopen").unwrap(), "Continue")
+            .start_recorded_run(
+                RunId::new("after-sqlite-reopen").unwrap(),
+                "Continue",
+                &reopened,
+                actors(),
+            )
             .unwrap();
-        assert_eq!(text(&drain(&mut run).await), "Hello world");
+        let mut events = Vec::new();
+        while let Some(event) = recorded_next(&mut run).await {
+            events.push(event);
+        }
+        assert_eq!(text(&events), "Hello world");
+        assert_eq!(run.run().spec().continuation, Some(continuation_id.clone()));
     }
     connection.shutdown().await.unwrap();
+    assert_eq!(
+        reopened
+            .get_run(&RunId::new("after-sqlite-reopen").unwrap())
+            .unwrap()
+            .continuation,
+        Some(continuation_id)
+    );
+}
+
+#[tokio::test]
+async fn configuration_discovery_and_invalid_values_do_not_dispatch_changes() {
+    let files = TestFiles::new();
+    let log = files.path("configuration");
+    let connection =
+        AcpConnection::connect(launch("config").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let state = session.configuration();
+        let options = state.options.unwrap();
+        assert_eq!(options[0].id, "model");
+        assert_eq!(options[0].choices.len(), 2);
+        assert_eq!(options[0].choices[0].group.as_deref(), Some("Provider"));
+        assert!(state.values.requested.is_empty());
+        assert_eq!(
+            state.values.confirmed.unwrap()["model"],
+            ConfigValue::Select("model-a".into())
+        );
+        assert!(matches!(
+            session.set_model("not-offered").await,
+            Err(AcpError::InvalidConfigurationValue)
+        ));
+        assert!(matches!(
+            session
+                .set_option("model", ConfigValue::Boolean(true))
+                .await,
+            Err(AcpError::InvalidConfigurationValue)
+        ));
+        assert!(matches!(
+            session
+                .set_option("missing", ConfigValue::Boolean(true))
+                .await,
+            Err(AcpError::UnknownConfigurationOption)
+        ));
+    }
+    connection.shutdown().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("session/set_config_option")
+    );
+}
+
+#[tokio::test]
+async fn switching_models_preserves_the_session_and_frozen_run_configuration() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("config")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let native = session.info().session_id.clone();
+        session
+            .set_option("effort", ConfigValue::Select("high".into()))
+            .await
+            .unwrap();
+        {
+            let mut run = session
+                .start_recorded_run(RunId::new("model-a").unwrap(), "First", &store, actors())
+                .unwrap();
+            while recorded_next(&mut run).await.is_some() {}
+        }
+        session
+            .set_option("toggle", ConfigValue::Boolean(true))
+            .await
+            .unwrap();
+        let changed = session.set_model("model-b").await.unwrap();
+        assert_eq!(
+            changed.values.confirmed.as_ref().unwrap()["effort"],
+            ConfigValue::Select("low".into())
+        );
+        assert_eq!(
+            changed.values.requested["effort"],
+            ConfigValue::Select("high".into())
+        );
+        assert_eq!(session.info().session_id, native);
+        {
+            let mut run = session
+                .start_recorded_run(RunId::new("model-b").unwrap(), "Second", &store, actors())
+                .unwrap();
+            assert_eq!(run.run().spec().config, changed.values);
+            while recorded_next(&mut run).await.is_some() {}
+        }
+    }
+    connection.shutdown().await.unwrap();
+    let a = store.get_run(&RunId::new("model-a").unwrap()).unwrap();
+    let b = store.get_run(&RunId::new("model-b").unwrap()).unwrap();
+    assert_eq!(a.session_id, b.session_id);
+    assert_eq!(
+        a.config.confirmed.unwrap()["model"],
+        ConfigValue::Select("model-a".into())
+    );
+    assert_eq!(
+        b.config.confirmed.as_ref().unwrap()["model"],
+        ConfigValue::Select("model-b".into())
+    );
+    assert_eq!(b.config.requested["toggle"], ConfigValue::Boolean(true));
+}
+
+#[tokio::test]
+async fn unreported_configuration_remains_unknown_and_cannot_be_selected() {
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        assert!(session.configuration().options.is_none());
+        assert!(matches!(
+            session.set_model("model-a").await,
+            Err(AcpError::ConfigurationUnsupported)
+        ));
+        let mut run = session
+            .start_run(RunId::new("default").unwrap(), "Hello")
+            .unwrap();
+        assert!(run.run().spec().config.confirmed.is_none());
+        while next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_setter_timeout_blocks_dispatch_and_handoff_until_confirmed() {
+    let connection = AcpConnection::connect(
+        launch("config-hang")
+            .session_timeout(Duration::from_millis(100))
+            .continuation_scope("profile"),
+    )
+    .await
+    .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        assert!(matches!(
+            session.set_model("model-b").await,
+            Err(AcpError::RequestTimedOut)
+        ));
+        assert!(session.configuration().values.confirmed.is_none());
+        assert!(matches!(
+            session.start_run(RunId::new("blocked").unwrap(), "Hello"),
+            Err(AcpError::ConfigurationUncertain)
+        ));
+        assert!(matches!(
+            session.handoff(
+                ContinuationId::new("blocked-handoff").unwrap(),
+                &MemoryStore::default()
+            ),
+            Err(AcpError::ConfigurationUncertain)
+        ));
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn late_configuration_acknowledgement_recovers_after_timeout() {
+    let connection =
+        AcpConnection::connect(launch("config-late").session_timeout(Duration::from_millis(100)))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        assert!(matches!(
+            session.set_model("model-b").await,
+            Err(AcpError::RequestTimedOut)
+        ));
+        timeout(Duration::from_secs(2), async {
+            while session.configuration().pending {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!session.configuration().uncertain);
+        assert_eq!(
+            session.configuration().values.confirmed.unwrap()["model"],
+            ConfigValue::Select("model-b".into())
+        );
+        let mut run = session
+            .start_run(RunId::new("after-late").unwrap(), "Hello")
+            .unwrap();
+        while next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn setter_errors_and_mismatched_reports_are_explicit() {
+    for mode in ["config-error", "config-reject"] {
+        let connection = AcpConnection::connect(launch(mode)).await.unwrap();
+        {
+            let mut session = new_session(&connection).await;
+            let result = session.set_model("model-b").await;
+            if mode == "config-error" {
+                assert!(matches!(result, Err(AcpError::Protocol(_))));
+                assert!(session.configuration().uncertain);
+            } else {
+                assert!(matches!(result, Err(AcpError::ConfigurationRejected)));
+                assert_eq!(
+                    session.configuration().values.confirmed.unwrap()["model"],
+                    ConfigValue::Select("model-a".into())
+                );
+            }
+            assert!(session.configuration().values.requested.is_empty());
+        }
+        connection.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn configuration_updates_immediately_after_setup_are_not_lost() {
+    let connection = AcpConnection::connect(launch("config-idle")).await.unwrap();
+    {
+        let session = new_session(&connection).await;
+        timeout(Duration::from_secs(2), async {
+            while session.configuration().values.confirmed.as_ref().unwrap()["model"]
+                != ConfigValue::Select("model-b".into())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn provider_configuration_changes_are_recorded_without_rewriting_dispatch_settings() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("config-fallback"))
+        .await
+        .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        {
+            let mut run = session
+                .start_recorded_run(RunId::new("fallback").unwrap(), "Hello", &store, actors())
+                .unwrap();
+            while recorded_next(&mut run).await.is_some() {}
+        }
+        assert_eq!(
+            session.configuration().values.confirmed.unwrap()["model"],
+            ConfigValue::Select("model-b".into())
+        );
+    }
+    connection.shutdown().await.unwrap();
+    assert_eq!(
+        store
+            .get_run(&RunId::new("fallback").unwrap())
+            .unwrap()
+            .config
+            .confirmed
+            .unwrap()["model"],
+        ConfigValue::Select("model-a".into())
+    );
+    let history = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    assert!(history.iter().any(|r| matches!(&r.record.payload, Payload::Extension {namespace,name,data}
+        if namespace == "agent_bridge" && name == "configuration_report" && data["confirmed"]["model"]["value"] == "model-b")));
 }

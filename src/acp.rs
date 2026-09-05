@@ -7,6 +7,7 @@
 //! No filesystem or terminal capabilities are advertised. This module does not
 //! log wire messages, install agents, or authenticate automatically.
 
+mod configuration;
 mod continuation;
 mod recording;
 mod session;
@@ -25,7 +26,10 @@ use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo,
     schema::{
         ProtocolVersion,
-        v1::{Implementation, InitializeRequest},
+        v1::{
+            BooleanConfigOptionCapabilities, ClientCapabilities, ClientSessionCapabilities,
+            Implementation, InitializeRequest, SessionConfigOptionsCapabilities,
+        },
     },
 };
 use tokio::{
@@ -116,6 +120,14 @@ pub enum AcpError {
     ContinuationScopeRequired,
     IncompatibleContinuation,
     UnsafeHandoff,
+    ConfigurationUnsupported,
+    UnknownConfigurationOption,
+    InvalidConfigurationValue,
+    InvalidConfiguration,
+    ConfigurationUncertain,
+    ConfigurationRejected,
+    ConfigurationChanged,
+    ModelSelectorUnavailable,
     Store(crate::records::StoreError),
     /// May include the SDK's bounded child stderr diagnostics. Do not log blindly.
     Protocol(agent_client_protocol::Error),
@@ -162,6 +174,30 @@ impl fmt::Display for AcpError {
             Self::UnsafeHandoff => {
                 f.write_str("session has unfinished or uncertain work and cannot be handed off")
             }
+            Self::ConfigurationUnsupported => {
+                f.write_str("provider did not expose session configuration options")
+            }
+            Self::UnknownConfigurationOption => {
+                f.write_str("configuration option was not offered by the provider")
+            }
+            Self::InvalidConfigurationValue => {
+                f.write_str("value has the wrong type or was not offered for this option")
+            }
+            Self::InvalidConfiguration => {
+                f.write_str("provider returned an invalid configuration catalog")
+            }
+            Self::ConfigurationUncertain => {
+                f.write_str("configuration is pending or uncertain; wait for a report or reconnect")
+            }
+            Self::ConfigurationRejected => {
+                f.write_str("provider did not confirm the requested option value")
+            }
+            Self::ConfigurationChanged => f.write_str(
+                "configuration changed before dispatch; choose a new run ID and retry explicitly",
+            ),
+            Self::ModelSelectorUnavailable => f.write_str(
+                "provider does not expose exactly one model selector; use an explicit option ID",
+            ),
             Self::Store(error) => error.fmt(f),
             Self::Protocol(error) => write!(f, "ACP connection failed: {error}"),
             Self::Task(error) => write!(f, "ACP connection task failed: {error}"),
@@ -228,7 +264,11 @@ impl AcpConnection {
                     let info = connection
                         .send_request(InitializeRequest::new(ProtocolVersion::V1).client_info(
                             Implementation::new("agent-bridge", env!("CARGO_PKG_VERSION")),
-                        ))
+                        ).client_capabilities(ClientCapabilities::new().session(
+                            ClientSessionCapabilities::new().config_options(
+                                SessionConfigOptionsCapabilities::new().boolean(BooleanConfigOptionCapabilities::new())
+                            )
+                        )))
                         .block_task()
                         .await?;
                     // The receiving owner may have cancelled its connect future.

@@ -3,7 +3,7 @@ use crate::records::{
     CompletionReason, Draft, MessageKind, Payload, PermissionOption, RecordState, RecordStore,
     Snapshot, SourceRef, StoreError, ToolActivity, ToolStatus,
 };
-use crate::{ActorId, Content, Message, RecordId, Run, RunSpec};
+use crate::{ActorId, ConfigValues, Content, Message, RecordId, Run, RunSpec};
 use agent_client_protocol::schema::v1::{
     ContentBlock, SessionUpdate, StopReason, ToolCall, ToolCallStatus,
 };
@@ -88,6 +88,7 @@ pub(super) struct Recorder<'store, S: RecordStore> {
     tools: HashMap<String, (usize, ToolCall)>,
     permissions: HashMap<PermissionId, usize>,
     finished: bool,
+    last_configuration: Option<ConfigValues>,
 }
 
 impl<'store, S: RecordStore> Recorder<'store, S> {
@@ -101,6 +102,7 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
         if !store.register_run(spec.clone())? {
             return Err(RecordingError::RunAlreadyRecorded);
         }
+        let last_configuration = spec.config.confirmed.clone();
         let mut this = Self {
             store,
             spec,
@@ -111,6 +113,7 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             tools: HashMap::new(),
             permissions: HashMap::new(),
             finished: false,
+            last_configuration,
         };
         this.insert(
             Payload::Message {
@@ -305,6 +308,32 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             }
             AcpEvent::Update(SessionUpdate::ToolCall(call)) => self.tool(call.clone()),
             AcpEvent::Update(SessionUpdate::ToolCallUpdate(update)) => self.tool_update(update),
+            AcpEvent::Update(SessionUpdate::ConfigOptionUpdate(update)) => {
+                let report = super::configuration::normalize(&update.config_options)
+                    .ok()
+                    .map(|options| {
+                        options
+                            .into_iter()
+                            .map(|option| (option.id, option.current))
+                            .collect::<ConfigValues>()
+                    });
+                if report == self.last_configuration {
+                    return Ok(());
+                }
+                self.last_configuration = report.clone();
+                self.insert(
+                    Payload::Extension {
+                        namespace: "agent_bridge".into(),
+                        name: "configuration_report".into(),
+                        data: serde_json::json!({"confirmed": report}),
+                    },
+                    self.actors.agent.clone(),
+                    None,
+                    None,
+                    RecordState::Complete,
+                )?;
+                Ok(())
+            }
             AcpEvent::Update(other) => {
                 self.extension("session_update", serde_json::to_value(other)?)
             }
@@ -589,7 +618,8 @@ mod tests {
                 session_id: SessionId::new("s").unwrap(),
                 slot_id: SlotId::new("slot").unwrap(),
                 context: ContextManifest::default(),
-                config: (),
+                config: Default::default(),
+                continuation: None,
             },
             "Question",
             RecordActors {

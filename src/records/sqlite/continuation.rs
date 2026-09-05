@@ -1,7 +1,7 @@
 use super::*;
 use crate::ContinuationId;
 
-fn read(
+pub(super) fn read(
     connection: &Connection,
     id: &ContinuationId,
 ) -> Result<Option<Arc<ContinuationRecord>>, StoreError> {

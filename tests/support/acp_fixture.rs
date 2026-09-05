@@ -89,6 +89,7 @@ fn main() {
         "resume-unsupported",
     ]
     .contains(&mode.as_str())
+        || mode.starts_with("config")
     {
         serve_sessions(&mode, &mut input);
     } else {
@@ -132,6 +133,7 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
     let mut pending: HashMap<String, (String, usize, bool)> = HashMap::new();
     let mut permissions: HashMap<String, String> = HashMap::new();
     let mut count = 0;
+    let mut settings: HashMap<String, (String, bool)> = HashMap::new();
     loop {
         let mut line = String::new();
         if input.read_line(&mut line).unwrap() == 0 {
@@ -158,7 +160,29 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                 if mode != "duplicate" || count == 0 {
                     count += 1;
                 }
-                reply(id, &format!("{{\"sessionId\":\"native-{count}\"}}"));
+                let session = format!("\"native-{count}\"");
+                settings.insert(session.clone(), ("model-a".into(), false));
+                if mode.starts_with("config") {
+                    reply(
+                        id,
+                        &format!(
+                            "{{\"sessionId\":{session},\"configOptions\":{}}}",
+                            config_options("model-a", false)
+                        ),
+                    );
+                    if mode == "config-idle" {
+                        settings.insert(session.clone(), ("model-b".into(), false));
+                        update(
+                            &session,
+                            &format!(
+                                "{{\"sessionUpdate\":\"config_option_update\",\"configOptions\":{}}}",
+                                config_options("model-b", false)
+                            ),
+                        );
+                    }
+                } else {
+                    reply(id, &format!("{{\"sessionId\":{session}}}"));
+                }
             }
         } else if line.contains("\"method\":\"session/resume\"") {
             let id = scalar(&line, "id");
@@ -170,6 +194,37 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
             } else if mode != "resume-hang" {
                 reply(id, "{}");
             }
+        } else if line.contains("\"method\":\"session/set_config_option\"") {
+            if mode == "config-hang" {
+                continue;
+            }
+            let id = scalar(&line, "id");
+            if mode == "config-error" {
+                println!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"configuration failed\"}}}}"
+                );
+                io::stdout().flush().unwrap();
+                continue;
+            }
+            let session = scalar(&line, "sessionId");
+            let option = scalar(&line, "configId").trim_matches('"');
+            let value = scalar(&line, "value").trim_matches('"');
+            let (model, flag) = settings.get_mut(session).unwrap();
+            if mode != "config-reject" {
+                if option == "model" {
+                    *model = value.into();
+                }
+                if option == "toggle" {
+                    *flag = value == "true";
+                }
+            }
+            if mode == "config-late" {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            reply(
+                id,
+                &format!("{{\"configOptions\":{}}}", config_options(model, *flag)),
+            );
         } else if line.contains("\"method\":\"session/prompt\"") {
             let session = scalar(&line, "sessionId");
             let id = scalar(&line, "id");
@@ -187,6 +242,17 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                 session,
                 r#"{"sessionUpdate":"agent_message_chunk","messageId":"message-1","content":{"type":"text","text":"Hello "}}"#,
             );
+            if mode == "config-fallback" {
+                let current = settings.get_mut(session).unwrap();
+                current.0 = "model-b".into();
+                update(
+                    session,
+                    &format!(
+                        "{{\"sessionUpdate\":\"config_option_update\",\"configOptions\":{}}}",
+                        config_options("model-b", current.1)
+                    ),
+                );
+            }
             if mode == "flood" {
                 for _ in 0..1024 {
                     update(
@@ -256,4 +322,13 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
             }
         }
     }
+}
+
+fn config_options(model: &str, flag: bool) -> String {
+    let effort = if model == "model-a" { "high" } else { "low" };
+    format!(r#"[
+      {{"id":"model","name":"Model","category":"model","type":"select","currentValue":"{model}","options":[{{"group":"provider","name":"Provider","options":[{{"value":"model-a","name":"Model A"}},{{"value":"model-b","name":"Model B"}}]}}]}},
+      {{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"{effort}","options":[{{"value":"{effort}","name":"{effort}"}}]}},
+      {{"id":"toggle","name":"Toggle","type":"boolean","currentValue":{flag}}}
+    ]"#).replace('\n', "")
 }

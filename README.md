@@ -18,6 +18,10 @@ portable transcripts through memory or SQLite stores. Native ACP sessions can be
 handed off and resumed through single-use continuations. Grant policies, portable
 context restoration, and uncertain-outcome reconciliation are still to come.
 
+Model and option changes can be applied between runs. Requested selections and
+provider-reported settings are stored with each run; later configuration reports
+do not rewrite that history. See [configuration](docs/configuration.md).
+
 ## Development
 
 Enter the development shell:

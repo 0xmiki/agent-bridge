@@ -133,6 +133,16 @@ impl RecordStore for MemoryStore {
         if !state.sessions.contains_key(&spec.session_id) {
             return Err(StoreError::MissingSession);
         }
+        if let Some(id) = &spec.continuation {
+            let saved = state.continuations.get(id)?;
+            if saved.state != ContinuationState::Claimed
+                || !saved.latest
+                || saved.continuation.session_id != spec.session_id
+                || saved.continuation.slot_id != spec.slot_id
+            {
+                return Err(StoreError::InvalidContinuation);
+            }
+        }
         for id in &spec.context.records {
             let entry = state.records.get(id).ok_or(StoreError::MissingRecord)?;
             if !entry.current.state.is_final() {

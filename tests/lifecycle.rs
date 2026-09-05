@@ -6,7 +6,8 @@ fn queued() -> Run {
         session_id: SessionId::new("session-1").unwrap(),
         slot_id: SlotId::new("slot-1").unwrap(),
         context: ContextManifest::default(),
-        config: (),
+        config: Default::default(),
+        continuation: None,
     })
 }
 

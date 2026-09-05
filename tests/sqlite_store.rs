@@ -47,7 +47,8 @@ fn spec(id: &str) -> RunSpec {
         session_id: SessionId::new("s").unwrap(),
         slot_id: SlotId::new("slot").unwrap(),
         context: ContextManifest::default(),
-        config: (),
+        config: Default::default(),
+        continuation: None,
     }
 }
 fn ready(store: &SqliteStore) {
@@ -249,7 +250,7 @@ fn migrations_coexist_with_application_tables_and_user_version() {
             .query_row("SELECT version FROM agent_bridge_schema", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
 }
 
@@ -309,13 +310,16 @@ fn upgrades_a_version_one_database_without_losing_records() {
                 row.get::<_, i64>(0)
             })
             .unwrap(),
-        2
+        3
     );
     assert!(
         connection
             .prepare("SELECT id FROM agent_bridge_continuations")
             .is_ok()
     );
+    let old_run = store.get_run(&RunId::new("r").unwrap()).unwrap();
+    assert_eq!(old_run.config, agent_bridge::RunConfiguration::default());
+    assert_eq!(old_run.continuation, None);
 }
 
 #[test]
@@ -683,4 +687,48 @@ fn corrupted_continuation_identity_is_rejected() {
         store.get_continuation(&continuation.id),
         Err(StoreError::CorruptData(_))
     ));
+}
+
+#[test]
+fn v2_migration_preserves_handles_and_leaves_legacy_run_configuration_unknown() {
+    let database = Database::new();
+    let connection = Connection::open(database.path()).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../src/records/sqlite/migrations/0001_records.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../src/records/sqlite/migrations/0002_continuations.sql"
+        ))
+        .unwrap();
+    connection.execute_batch("UPDATE agent_bridge_schema SET version = 2; INSERT INTO agent_bridge_sessions(id) VALUES ('s');").unwrap();
+    connection.execute("INSERT INTO agent_bridge_runs(id, session_id, slot_id, context_json) VALUES('r', 's', 'slot', ?1)",
+        [json!({"version":1,"data":{"records":[],"instructions":[],"resources":[]}}).to_string()]).unwrap();
+    let origin = continuation("v2-handle");
+    connection.execute("INSERT INTO agent_bridge_continuations(id, session_id, adapter, scope, native_key, descriptor_json, state, latest)
+        VALUES (?1, 's', ?2, ?3, ?4, ?5, 'claimed', 1)", params![origin.id.as_str(), origin.adapter, origin.scope, origin.native_key,
+            json!({"version":1,"data":origin}).to_string()]).unwrap();
+    drop(connection);
+    let store = database.open();
+    let legacy = store.get_run(&RunId::new("r").unwrap()).unwrap();
+    assert_eq!(legacy.config, Default::default());
+    assert_eq!(legacy.continuation, None);
+    assert_eq!(
+        store.get_continuation(&origin.id).unwrap().continuation,
+        origin
+    );
+    let mut current = spec("current");
+    current.continuation = Some(origin.id);
+    current.config.requested.insert(
+        "model".into(),
+        agent_bridge::ConfigValue::Select("model-b".into()),
+    );
+    current.config.confirmed = Some(current.config.requested.clone());
+    store.register_run(current.clone()).unwrap();
+    drop(store);
+    let reopened = database.open();
+    assert_eq!(reopened.get_run(&current.id).unwrap(), current);
+    assert_eq!(reopened.get_run(&legacy.id).unwrap(), legacy);
 }
