@@ -4,6 +4,10 @@ Status: draft, September 2026. This is a starting point for implementation, not
 a frozen API or database schema. Change it when examples or provider behavior
 show a better boundary. See [philosophy.md](../philosophy.md) for the intent.
 
+Implementation checkpoints: the core types and lifecycle now have tests; the
+optional [ACP connection](acp.md) can initialize an installed agent. No execution,
+storage, or provider-continuation contract is frozen by that adapter yet.
+
 ## Four concepts
 
 | Concept | Owns | Does not imply |

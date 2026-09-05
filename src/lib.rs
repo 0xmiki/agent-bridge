@@ -1,7 +1,11 @@
 //! Shared integration for connecting applications to installed AI agents.
 //!
-//! This first slice defines an execution model. It does not connect to providers
-//! or persist data yet. Public types remain provisional.
+//! The execution model is independent of transports. The optional `acp` module adds
+//! subprocess initialization; prompting and persistence are still to come.
+//! Public types remain provisional.
+
+#[cfg(feature = "acp")]
+pub mod acp;
 
 mod id;
 mod model;
