@@ -9,6 +9,7 @@ default = []
 records = ["dep:serde_json"]
 sqlite = ["records", "dep:rusqlite", "dep:serde"]
 acp = ["records", "dep:serde", "dep:agent-client-protocol", "dep:tokio"]
+providers = ["acp", "tokio/process", "tokio/io-util"]
 
 [dependencies]
 agent-client-protocol = { version = "2.1.0", optional = true }
@@ -39,3 +40,7 @@ required-features = ["acp", "sqlite"]
 [[example]]
 name = "acp_models"
 required-features = ["acp", "sqlite"]
+
+[[example]]
+name = "providers"
+required-features = ["providers"]

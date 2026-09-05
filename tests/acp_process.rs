@@ -1715,3 +1715,126 @@ async fn provider_configuration_changes_are_recorded_without_rewriting_dispatch_
     assert!(history.iter().any(|r| matches!(&r.record.payload, Payload::Extension {namespace,name,data}
         if namespace == "agent_bridge" && name == "configuration_report" && data["confirmed"]["model"]["value"] == "model-b")));
 }
+
+#[cfg(feature = "providers")]
+#[tokio::test]
+async fn provider_definitions_share_the_same_driver_session_workflow() {
+    use agent_bridge::providers::{
+        AcpDriver, AuthenticationState, ExecutableSearch, ProviderDefinition, ProviderDriver,
+    };
+    for mut definition in [
+        ProviderDefinition::opencode(),
+        ProviderDefinition::codex(),
+        ProviderDefinition::claude(),
+    ] {
+        let expected_id = definition.id.clone();
+        definition.args = vec!["chat".into()]; // Standalone ACP fixture, no Node dependency.
+        let inspected = definition
+            .profile("test")
+            .executable(fixture())
+            .inspect(&ExecutableSearch::from_directories([]));
+        let provider = AcpDriver
+            .connect(inspected.into_resolved().ok().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(provider.report().provider, expected_id);
+        assert_eq!(provider.report().reported_name.as_deref(), Some("fixture"));
+        assert_eq!(
+            provider.report().authentication,
+            AuthenticationState::Unknown
+        );
+        {
+            let mut session = provider
+                .new_session(
+                    SessionId::new("provider-session").unwrap(),
+                    SlotId::new("provider-slot").unwrap(),
+                    std::env::current_dir().unwrap(),
+                    vec![],
+                )
+                .await
+                .unwrap();
+            let mut run = session
+                .start_run(RunId::new("provider-run").unwrap(), "Hello")
+                .unwrap();
+            assert_eq!(text(&drain(&mut run).await), "Hello world");
+        }
+        provider.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(feature = "providers")]
+#[tokio::test]
+async fn provider_probe_classifies_protocol_and_authentication_failures() {
+    use agent_bridge::providers::{
+        AcpDriver, AuthenticationState, ExecutableSearch, ProviderDefinition, ProviderDriver,
+        ProviderError,
+    };
+    let profile = |mode: &str| {
+        ProviderDefinition::custom("fixture", "unused")
+            .profile("test")
+            .executable(fixture())
+            .arg(mode)
+    };
+    let search = ExecutableSearch::from_directories([]);
+    let incompatible = profile("version")
+        .inspect(&search)
+        .into_resolved()
+        .ok()
+        .unwrap();
+    assert!(matches!(
+        AcpDriver.connect(incompatible).await,
+        Err(ProviderError::IncompatibleProtocol)
+    ));
+    let provider = AcpDriver
+        .connect(
+            profile("new-error")
+                .inspect(&search)
+                .into_resolved()
+                .ok()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        provider
+            .new_session(
+                SessionId::new("s").unwrap(),
+                SlotId::new("slot").unwrap(),
+                std::env::current_dir().unwrap(),
+                vec![]
+            )
+            .await,
+        Err(ProviderError::AuthenticationRequired)
+    ));
+    assert_eq!(
+        provider.report().authentication,
+        AuthenticationState::Required
+    );
+    provider.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "providers")]
+#[tokio::test]
+async fn a_mismatched_driver_does_not_launch_the_provider() {
+    use agent_bridge::providers::{
+        AcpDriver, ExecutableSearch, ProviderDefinition, ProviderDriver, ProviderError,
+    };
+    let files = TestFiles::new();
+    let pid = files.path("pid");
+    let mut definition = ProviderDefinition::custom("fixture", "unused");
+    definition.driver = "custom-driver".into();
+    let resolved = definition
+        .profile("test")
+        .executable(fixture())
+        .arg("chat")
+        .env("BRIDGE_TEST_PID", pid.to_string_lossy())
+        .inspect(&ExecutableSearch::from_directories([]))
+        .into_resolved()
+        .ok()
+        .unwrap();
+    assert!(matches!(
+        AcpDriver.connect(resolved).await,
+        Err(ProviderError::UnsupportedDriver(_))
+    ));
+    assert!(!pid.exists());
+}

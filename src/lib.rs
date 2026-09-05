@@ -4,11 +4,15 @@
 //! subprocess sessions, streamed text runs, and permission routing. The `records`
 //! feature adds portable transcripts and an in-memory store. The optional `sqlite`
 //! feature persists records and single-use continuation handles across restarts.
+//! The optional `providers` feature adds installed-provider discovery and drivers.
 //! Provider execution recovery is still separate work.
 //! Public types remain provisional.
 
 #[cfg(feature = "acp")]
 pub mod acp;
+
+#[cfg(feature = "providers")]
+pub mod providers;
 
 #[cfg(feature = "records")]
 pub mod records;

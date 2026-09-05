@@ -22,14 +22,16 @@ tool use must also work in examples independent of those applications.
 Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
 
 - M0 and M1 are complete within the scopes below.
-- **M2 is the next target. Implementation has not started.**
-- The last implementation verification passed 105 tests, Clippy, documentation
-  generation, and the core, records, ACP, and SQLite feature builds.
+- **M2 is in progress: provider definitions, setup diagnostics, and compatibility checks.**
+- The M2 provider increment passes 118 tests, Clippy, documentation generation,
+  and separate core, records, ACP, SQLite, and providers feature builds.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
-- Codex and Claude compatibility, TypeScript, Tauri integration, and app migrations
-  have not been implemented or verified yet.
+- The shared provider example completes real text prompts with OpenCode and Codex.
+  Claude opens a session but requires local authentication at prompt dispatch.
+- The full multi-provider workflow suite, TypeScript, Tauri integration, and app
+  migrations remain unfinished.
 
 The crate's `0.1.0` version is scaffold metadata, not evidence that an alpha has
 been released. M8 defines the first release gate.
@@ -38,7 +40,7 @@ been released. M8 defines the first release gate.
 | --- | --- | --- | --- |
 | M0 | Execution and persistence foundation | Complete | — |
 | M1 | Model selection and attributable run configuration | Complete | M0 |
-| M2 | Verified multi-provider integration and setup | Next | M1 |
+| M2 | Verified multi-provider integration and setup | In progress | M1 |
 | M3 | Explicit context, instructions, and rich tasks | Planned | M2 |
 | M4 | Application tools, authority, and execution composition | Planned | M3 |
 | M5 | Durable execution bookkeeping and bounded recovery | Planned | M4 |
@@ -102,15 +104,28 @@ ownership. Confirmation means provider-reported settings, not model identity att
 
 ## M2 — Verified multi-provider integration and setup
 
-- [ ] Define the provider/driver contract above the ACP implementation.
-- [ ] Add launch definitions and compatibility checks for OpenCode, Codex, and Claude.
-- [ ] Discover installations and distinguish missing CLI, missing adapter, incompatible
+- [x] Define the provider/driver contract above the ACP implementation.
+- [x] Add launch definitions and compatibility checks for OpenCode, Codex, and Claude.
+- [x] Discover installations and distinguish missing CLI, missing adapter, incompatible
   version, setup required, and ready states where these can be established.
-- [ ] Support explicit executable paths and provider profile scopes.
-- [ ] Provide actionable setup guidance using each provider's supported mechanisms.
+- [x] Support explicit executable paths and provider profile scopes.
+- [x] Provide actionable setup guidance using each provider's supported mechanisms.
 - [ ] Run a shared compatibility suite for text, tools, permissions, cancellation,
   configuration, and advertised continuation behavior.
-- [ ] Publish tested versions and limitations, separating advertised from verified support.
+- [x] Publish tested versions and limitations, separating advertised from verified support.
+
+First increment: [provider API](docs/providers.md), [implementation](src/providers.rs),
+[discovery tests](tests/providers.rs), and [real compatibility evidence](verification/adapters/README.md).
+The driver contract currently covers launch and connection with an associated
+connection type; neutral host/session contracts remain M6 work. Launchable,
+connected, and authentication evidence stay distinct. Compatibility checks cover
+protocol negotiation and Claude JavaScript's declared Node minimum, not a blanket
+adapter-version allowlist.
+
+Next M2 slice: extend the common real-provider suite to tools, permissions,
+cancellation, model changes, and native continuation. Claude's generation checks
+need supported local authentication. M2 remains in progress until the common
+workflow evidence satisfies the completion criterion below.
 
 Done when the same example and application-facing contract work across all three
 providers for their declared common capabilities. A provider-specific implementation

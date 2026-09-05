@@ -22,6 +22,12 @@ Model and option changes can be applied between runs. Requested selections and
 provider-reported settings are stored with each run; later configuration reports
 do not rewrite that history. See [configuration](docs/configuration.md).
 
+The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
+read-only discovery, explicit profiles, and setup diagnostics through a shared
+ACP driver. See [installed providers](docs/providers.md) for the API and current
+compatibility evidence. Inspect local installations with
+`cargo run --features providers --example providers`.
+
 ## Development
 
 Enter the development shell:
