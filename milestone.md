@@ -34,6 +34,8 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   schema version 4 preserves earlier schemas; image receipt data uses version 2.
 - Restoration policies add four workflow tests, for 139 total. Native resume and
   portable selection have distinct setup and first-run behavior.
+- Instruction grants and omission policies add six tests, for 145 total. Both
+  OpenCode and Codex passed the two-revision supplemental-guidance example.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -174,13 +176,19 @@ Native resume never falls back to a fresh session. Portable restoration freezes
 the selected context, requires it on the first run, and records categories of state
 not transferred. Later turns do not replay the selection.
 
-Next slice: instruction-change authority and explicit omission policies. Skills
-and structured output remain later M3 increments.
+The fifth increment adds [instruction grants and exact omissions](docs/context-policy.md).
+Requester, issuer, revision, and role are checked before instruction dispatch.
+Receipts preserve requested/effective selection and explicit omission reasons.
+The supported change mechanism is supplemental user-level guidance; native base
+instruction replacement remains an explicit capability error.
+
+Next slice: structured-result validation and a runnable background-task example.
+Versioned skills and their fallback policy are the final remaining M3 item afterward.
 
 - [x] Resolve explicit context manifests from stored records and resources.
-- [ ] Record what the bridge supplied, including instruction revisions and omissions.
+- [x] Record what the bridge supplied, including instruction revisions and omissions.
 - [x] Keep instructions, conversation history, and provider continuation distinct.
-- [ ] Support instruction changes with explicit authority and capability requirements.
+- [x] Support instruction changes with explicit authority and capability requirements.
 - [x] Add resource storage and image input without repeatedly copying large assets.
 - [x] Define explicit native-resume versus portable-context restoration policies.
 - [ ] Add structured-result validation; distinguish native enforcement from validation

@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let mut session = connection.new_session(session_id.clone(), SlotId::new("image-example")?, workspace, vec![]).await?;
         let mut run = session.start_recorded_context_run(RunId::new(format!("run-{unique}"))?, ContextTask {
+            policy:Default::default(),
             prompt:"What is the predominant color in the attached image? Reply with one lowercase color word. Do not use tools.",
             manifest:&manifest, resources:&store, limits:ContextLimits { max_items:4, max_resource_bytes:4*1024*1024 },
             max_prompt_bytes:6*1024*1024, mode:ContextMode::AppendImagesToNative,

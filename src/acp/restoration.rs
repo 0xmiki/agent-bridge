@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct PortableRestore {
+    pub policy: crate::context::ContextPolicy,
     pub session_id: SessionId,
     pub slot_id: SlotId,
     pub cwd: PathBuf,
@@ -70,12 +71,13 @@ impl AcpConnection {
                 })
             }
             RestorationPolicy::Portable(plan) => {
-                let context = crate::context::prepare(
+                let context = crate::context::prepare_with_policy(
                     &plan.manifest,
                     store,
                     resources,
                     std::slice::from_ref(&plan.session_id),
                     plan.limits,
+                    &plan.policy,
                 )?;
                 // Validate unsupported roles/content/capabilities before session/new.
                 // The actual task's encoded size is checked again at run dispatch.
@@ -100,11 +102,17 @@ impl AcpConnection {
                     "id":instruction.reference.resource.id.as_str(), "revision":instruction.reference.resource.revision,
                     "role":"supplemental", "delivery":"user_text"
                 })).collect();
-                let report = json!({"version":1,"strategy":"portable_selection","native_context":"new_session",
+                let mut report = json!({"version":1,"strategy":"portable_selection","native_context":"new_session",
                     "session_id":plan.session_id.as_str(),"slot_id":plan.slot_id.as_str(),
                     "selected_records":selected_records,"selected_resources":selected_resources,"selected_instructions":selected_instructions,
                     "not_transferred":["history_outside_selection","provider_hidden_state","native_instruction_state","provider_configuration","prior_tool_grants","skill_activation_state"],
                     "delivery":"pending_first_run"});
+                if !context.policy.omissions.is_empty()
+                    || context.policy.instruction_authorization.is_some()
+                {
+                    report["version"] = json!(2);
+                    report["context_policy"] = super::context::policy_evidence(&context);
+                }
                 let session = self
                     .new_session(plan.session_id, plan.slot_id, plan.cwd, mcp)
                     .await?;

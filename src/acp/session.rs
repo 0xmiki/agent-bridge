@@ -331,12 +331,13 @@ impl<'connection> AcpSession<'connection> {
         if self.connection.is_closed() {
             return Err(AcpError::Closed.into());
         }
-        let context = crate::context::prepare(
+        let context = crate::context::prepare_with_policy(
             task.manifest,
             store,
             task.resources,
             std::slice::from_ref(&self.session_id),
             task.limits,
+            &task.policy,
         )?;
         self.start_prepared_context_run(
             id,
@@ -369,6 +370,15 @@ impl<'connection> AcpSession<'connection> {
             return Err(AcpError::Closed.into());
         }
         let mut spec = self.run_spec(id)?;
+        if task
+            .context
+            .policy
+            .instruction_authorization
+            .as_ref()
+            .is_some_and(|authorization| authorization.grant.issuer != actors.host)
+        {
+            return Err(crate::context::ContextError::InstructionUnauthorized.into());
+        }
         for selected in &task.context.records {
             if *store.get(&selected.record.id)? != **selected {
                 return Err(crate::records::StoreError::RevisionConflict.into());

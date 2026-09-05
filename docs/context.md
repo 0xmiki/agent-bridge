@@ -50,7 +50,8 @@ let prepared = prepare(
 Missing inputs, scope violations, open records, invalid instruction content, and
 exceeded limits fail preparation. Nothing is automatically dropped, summarized,
 replaced with a newer revision, or sent to a provider. A caller can make a different
-selection and prepare again; explicit omission policies remain future work.
+selection and prepare again. [Context policies](context-policy.md) add exact,
+authorized omissions through a separate policy-aware preparation path.
 
 The limits bound selection count and unique resource bytes. They are not token
 budgets, record-payload size limits, or pre-fetch memory limits for custom stores.
@@ -64,6 +65,8 @@ manifest internally against the destination session's history and the task's
 resource store. `ContextTask` includes the task prompt, manifest, resource store,
 preparation limits, maximum encoded prompt bytes, and an explicit
 `TextContextMode::AppendToNative` choice.
+It also requires `policy`; the default denies declared instructions. Use an exact
+instruction grant as described in [instruction authority](context-policy.md).
 
 This mode sends one JSON text envelope containing selected conversation messages,
 their authors and revisions, supplemental instruction references, unique resource
@@ -89,13 +92,15 @@ memory allocated while constructing the envelope.
 ## Input receipt evidence
 
 The recorder writes immutable `Payload::Extension` records with namespace
-`agent_bridge`, name `input_receipt`, and data version `1`. Consumers must check
-all three identifiers. Subsequent receipts refer to the same run through its
+`agent_bridge`, name `input_receipt`, and an inner data version. Version 1 covers
+policy-free text, version 2 adds images, and version 3 adds policy evidence described
+in [context policies](context-policy.md). Consumers must check all three identifiers.
+Subsequent receipts refer to the same run through its
 record attribution; only the preparation receipt includes the wire text.
 
 | State | Established fact |
 | --- | --- |
-| `prepared` | Exact encoded text, encoding version, byte count, context mode, and the empty omission list were persisted before dispatch. |
+| `prepared` | Encoded input evidence, encoding version, byte count, context mode, and omission report were persisted before dispatch. |
 | `dispatch_attempted` | The bridge persisted dispatch intent immediately before calling the transport. The provider may not have received it. |
 | `response_received` | A correlated prompt response was observed; its native stop reason is included. This does not prove every input was consumed or obeyed. |
 | `unknown` | The run failed or recording ended before such a response was persisted. No retry is implied. |
@@ -122,8 +127,9 @@ cargo run --features acp,sqlite --example acp_context -- \
   /tmp/context-example.sqlite3 /absolute/disposable-workspace opencode acp
 ```
 
-It selects a stored message and a versioned supplemental instruction, verifies the
-answer, and reopens its input receipts from SQLite. It uses the configured model,
+It selects a stored message, grants two supplemental instruction revisions across
+two turns, verifies the changed answer style, and reopens its receipts from SQLite.
+The second turn records an explicit optional-resource omission. It uses the configured model,
 dismisses tool permission requests, and has a 60-second workflow timeout.
 
 Verified September 5, 2026 with OpenCode 1.18.25 and Codex ACP 1.10.0 using local
@@ -157,7 +163,8 @@ count, and SHA-256 digest. The bridge does not fetch URLs or substitute captions
 Image prompts use encoding `agent_bridge.media_context.v1` and input receipt data
 version `2`. The preparation receipt retains the text envelope and image descriptors,
 not base64 image copies. Later delivery-state receipts use version 2 for that run.
-Text-only prompts continue to use receipt version 1. The outer record JSON format
+Without instruction authority or omissions, text-only prompts use receipt version 1;
+policy evidence uses version 3 for either text or images. The outer record JSON format
 is unchanged. For image inputs, `wire_bytes` and the prompt limit cover the serialized
 ACP content-block array, including base64 and escaping; they exclude request IDs and
 other RPC framing. Oversized images fail before dispatch.
@@ -194,5 +201,6 @@ Verified September 5, 2026 with a generated 32-by-32 solid-red PNG:
 Protocol image support is necessary but not proof of model-level success. The
 example validates the answer independently of input-delivery evidence. Claude
 verification remains deferred. [Restoration policy](restoration.md) now makes native
-resume and portable selection explicit. Base-instruction authority,
-explicit omission policies, skills, and structured-result validation remain M3 work.
+resume and portable selection explicit. [Instruction grants and omission policies](context-policy.md)
+now govern declared instruction changes and excluded selections. Native base
+replacement remains unsupported; skills and structured-result validation remain M3 work.

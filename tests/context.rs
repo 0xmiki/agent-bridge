@@ -23,6 +23,151 @@ fn limits() -> ContextLimits {
         max_resource_bytes: 100,
     }
 }
+
+#[test]
+fn instruction_authority_pins_requester_revision_and_role_even_for_omissions() {
+    let records = MemoryStore::default();
+    let resources = MemoryResourceStore::default();
+    resources.put(resource("v1", b"guidance")).unwrap();
+    resources.put(resource("v2", b"changed guidance")).unwrap();
+    let instruction = InstructionRef {
+        resource: reference("v1"),
+        role: InstructionRole::Supplemental,
+    };
+    let mut manifest = ContextManifest {
+        instructions: vec![instruction.clone()],
+        ..Default::default()
+    };
+    let mut policy =
+        ContextPolicy::for_host(ActorId::new("host").unwrap(), vec![instruction.clone()]);
+    assert!(prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy).is_ok());
+    Arc::make_mut(policy.instruction_authorization.as_mut().unwrap()).requester =
+        ActorId::new("ungranted-agent").unwrap();
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InstructionUnauthorized)
+    ));
+    Arc::make_mut(policy.instruction_authorization.as_mut().unwrap()).requester =
+        ActorId::new("host").unwrap();
+    manifest.instructions[0].resource.revision = "v2".into();
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InstructionUnauthorized)
+    ));
+    manifest.instructions[0] = instruction.clone();
+    manifest.instructions[0].role = InstructionRole::Base;
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InstructionUnauthorized)
+    ));
+    manifest.instructions[0] = instruction.clone();
+    policy.instruction_authorization = None;
+    policy.omissions.push(ContextOmission {
+        item: ContextItem::Instruction(instruction),
+        reason: "skip".into(),
+    });
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InstructionUnauthorized)
+    ));
+}
+
+#[test]
+fn exact_omissions_skip_unavailable_inputs_and_keep_an_audit() {
+    let records = MemoryStore::default();
+    let resources = MemoryResourceStore::default();
+    let manifest = ContextManifest {
+        resources: vec![reference("missing"), reference("missing")],
+        ..Default::default()
+    };
+    let omission = ContextOmission {
+        item: ContextItem::Resource(reference("missing")),
+        reason: "not needed for this run".into(),
+    };
+    let policy = ContextPolicy {
+        omissions: vec![omission.clone()],
+        ..Default::default()
+    };
+    let prepared =
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy).unwrap();
+    assert_eq!(prepared.requested_manifest, manifest);
+    assert!(prepared.manifest.resources.is_empty());
+    assert_eq!(prepared.policy.omissions, vec![omission.clone()]);
+    for omissions in [
+        vec![ContextOmission {
+            item: ContextItem::Resource(reference("wrong")),
+            reason: "wrong item".into(),
+        }],
+        vec![ContextOmission {
+            reason: " ".into(),
+            ..omission.clone()
+        }],
+        vec![omission.clone(), omission],
+    ] {
+        assert!(matches!(
+            prepare_with_policy(
+                &manifest,
+                &records,
+                &resources,
+                &[],
+                limits(),
+                &ContextPolicy {
+                    omissions,
+                    ..Default::default()
+                }
+            ),
+            Err(ContextError::InvalidOmission)
+        ));
+    }
+    assert!(matches!(
+        prepare_with_policy(
+            &manifest,
+            &records,
+            &resources,
+            &[],
+            ContextLimits {
+                max_items: 1,
+                ..limits()
+            },
+            &policy
+        ),
+        Err(ContextError::ItemLimit)
+    ));
+}
+
+#[test]
+fn an_omitted_resource_cannot_leak_back_through_retained_messages() {
+    let records = MemoryStore::default();
+    let resources = MemoryResourceStore::default();
+    let session = SessionId::new("history").unwrap();
+    records.create_session(session.clone()).unwrap();
+    let record = records
+        .insert(draft("attached", RecordState::Complete))
+        .unwrap();
+    let manifest = ContextManifest {
+        records: vec![record.record.id.clone()],
+        resources: vec![reference("v1")],
+        ..Default::default()
+    };
+    let policy = ContextPolicy {
+        omissions: vec![ContextOmission {
+            item: ContextItem::Resource(reference("v1")),
+            reason: "exclude attachment".into(),
+        }],
+        ..Default::default()
+    };
+    assert!(matches!(
+        prepare_with_policy(
+            &manifest,
+            &records,
+            &resources,
+            &[session],
+            limits(),
+            &policy
+        ),
+        Err(ContextError::ReferencedOmission(_))
+    ));
+}
 fn draft(id: &str, state: RecordState) -> Draft {
     Draft {
         id: RecordId::new(id).unwrap(),

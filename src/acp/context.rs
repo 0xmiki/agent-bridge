@@ -16,6 +16,7 @@ pub enum ContextMode {
 pub type TextContextMode = ContextMode;
 
 pub struct ContextTask<'a, R: ResourceStore> {
+    pub policy: crate::context::ContextPolicy,
     pub prompt: &'a str,
     pub manifest: &'a ContextManifest,
     pub resources: &'a R,
@@ -26,6 +27,27 @@ pub struct ContextTask<'a, R: ResourceStore> {
 
 fn reference(reference: &ResourceRef) -> Value {
     json!({"id": reference.id.as_str(), "revision": reference.revision})
+}
+
+fn instruction(instruction: &crate::InstructionRef) -> Value {
+    json!({"resource":reference(&instruction.resource), "role":match instruction.role { InstructionRole::Base => "base", InstructionRole::Supplemental => "supplemental" }})
+}
+
+pub(super) fn policy_evidence(context: &PreparedContext) -> Value {
+    use crate::context::ContextItem;
+    let omissions: Vec<_> = context.policy.omissions.iter().map(|omission| json!({"item":match &omission.item {
+        ContextItem::Record(id) => json!({"type":"record","id":id.as_str()}),
+        ContextItem::Instruction(value) => json!({"type":"instruction","instruction":instruction(value)}),
+        ContextItem::Resource(value) => json!({"type":"resource","resource":reference(value)}),
+    },"reason":omission.reason})).collect();
+    let authority = context.policy.instruction_authorization.as_ref().map(|authorization| json!({
+        "issuer":authorization.grant.issuer.as_str(), "requester":authorization.requester.as_str(),
+        "subject":authorization.grant.subject.as_str(), "granted_instructions":authorization.grant.instructions.iter().map(instruction).collect::<Vec<_>>()
+    }));
+    json!({"omissions":omissions,"instruction_authority":authority,
+        "requested_context":{"records":context.requested_manifest.records.iter().map(|id|id.as_str()).collect::<Vec<_>>(),
+            "instructions":context.requested_manifest.instructions.iter().map(instruction).collect::<Vec<_>>(),
+            "resources":context.requested_manifest.resources.iter().map(reference).collect::<Vec<_>>()}})
 }
 
 fn text(resource: &Resource) -> Result<&str, super::RecordingError> {
@@ -211,6 +233,13 @@ pub(super) fn encode(
         receipt["wire_bytes"] = json!(counter.used);
         receipt["images"] = json!(image_refs);
         receipt["resource_retention"] = json!("supplied_resource_store");
+    }
+    if !context.policy.omissions.is_empty() || context.policy.instruction_authorization.is_some() {
+        let evidence = policy_evidence(context);
+        receipt["version"] = json!(3);
+        for key in ["omissions", "instruction_authority", "requested_context"] {
+            receipt[key] = evidence[key].clone();
+        }
     }
     Ok((wire, blocks, receipt))
 }

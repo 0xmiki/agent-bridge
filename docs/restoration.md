@@ -32,6 +32,7 @@ bridge cannot attest its contents or completeness. This is not a portable snapsh
 ```rust,ignore
 let mut restored = connection.restore(
     RestorationPolicy::Portable(PortableRestore {
+        policy: ContextPolicy::for_host(host_actor.clone(), selected_context.instructions.clone()),
         session_id: conversation_id,
         slot_id: destination_slot,
         cwd: workspace,
@@ -72,6 +73,12 @@ portable input and can be extracted immediately. Use recorded runs on the wrappe
 to persist restoration evidence.
 
 ## Reports and limits
+
+Portable plans require a [context policy](context-policy.md). Exact omissions and
+instruction grants are validated when freezing the selection; the grant issuer
+must also match the recorded host at first dispatch. Plans using either feature
+report data version 2 with preserved policy evidence. A policy-free plan retains
+the version 1 report described below.
 
 `report()` returns a versioned JSON setup report. Portable reports list selected
 record IDs/revisions, resolved resource IDs/revisions, supplemental instruction

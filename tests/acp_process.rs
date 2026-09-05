@@ -777,10 +777,268 @@ fn actors() -> RecordActors {
     }
 }
 
+#[tokio::test]
+async fn restoration_reports_preserve_explicit_instruction_omissions() {
+    use agent_bridge::context::{ContextItem, ContextOmission};
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let instruction = agent_bridge::InstructionRef {
+        resource: agent_bridge::ResourceRef {
+            id: agent_bridge::ResourceId::new("base-not-transferred").unwrap(),
+            revision: "v1".into(),
+        },
+        role: agent_bridge::InstructionRole::Base,
+    };
+    let manifest = agent_bridge::ContextManifest {
+        instructions: vec![instruction.clone()],
+        ..Default::default()
+    };
+    let mut policy = portable_policy(manifest);
+    let agent_bridge::acp::RestorationPolicy::Portable(plan) = &mut policy else {
+        unreachable!()
+    };
+    plan.policy.omissions.push(ContextOmission {
+        item: ContextItem::Instruction(instruction),
+        reason: "host explicitly selected portable supplemental context only".into(),
+    });
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut restored = connection
+            .restore(policy, &store, &resources, vec![])
+            .await
+            .unwrap();
+        assert_eq!(restored.report()["version"], 2);
+        assert_eq!(
+            restored.report()["context_policy"]["omissions"][0]["item"]["instruction"]["role"],
+            "base"
+        );
+        assert!(
+            restored.report()["selected_instructions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let mut run = restored
+            .start_recorded_run(
+                RunId::new("approved-omission").unwrap(),
+                "Hello",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    let receipts = input_receipts(&store);
+    assert_eq!(receipts[0]["version"], 3);
+    assert!(
+        !receipts[0]["wire_text"]
+            .as_str()
+            .unwrap()
+            .contains("base-not-transferred")
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn instruction_revision_changes_require_exact_grants_and_preserve_prior_receipts() {
+    use agent_bridge::context::{
+        ContextPolicy, InstructionAuthorization, InstructionGrant, MemoryResourceStore, Resource,
+    };
+    use agent_bridge::{ContextManifest, InstructionRef, InstructionRole, ResourceId, ResourceRef};
+    let files = TestFiles::new();
+    let database = files.path("authority.sqlite3");
+    let log = files.path("messages");
+    let store = agent_bridge::records::SqliteStore::open(&database).unwrap();
+    let resources = MemoryResourceStore::default();
+    let reference = |revision: &str| ResourceRef {
+        id: ResourceId::new("style").unwrap(),
+        revision: revision.into(),
+    };
+    for (revision, text) in [("v1", "original style"), ("v2", "new style")] {
+        resources
+            .put(Resource {
+                reference: reference(revision),
+                media_type: "text/plain".into(),
+                bytes: std::sync::Arc::from(text.as_bytes()),
+            })
+            .unwrap();
+    }
+    let first = InstructionRef {
+        resource: reference("v1"),
+        role: InstructionRole::Supplemental,
+    };
+    let second = InstructionRef {
+        resource: reference("v2"),
+        role: InstructionRole::Supplemental,
+    };
+    let delegate = ActorId::new("agent-proposing-change").unwrap();
+    let policy = |instruction: InstructionRef, issuer: ActorId| ContextPolicy {
+        omissions: vec![],
+        instruction_authorization: Some(std::sync::Arc::new(InstructionAuthorization {
+            requester: delegate.clone(),
+            grant: InstructionGrant {
+                issuer,
+                subject: delegate.clone(),
+                instructions: vec![instruction],
+            },
+        })),
+    };
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        for (index, selected) in [first.clone(), second.clone()].into_iter().enumerate() {
+            let manifest = ContextManifest {
+                instructions: vec![selected.clone()],
+                ..Default::default()
+            };
+            if index == 1 {
+                let mut denied = context_task(&manifest, &resources);
+                denied.policy = policy(first.clone(), actors().host);
+                assert!(matches!(
+                    session.start_recorded_context_run(
+                        RunId::new("ungranted-revision").unwrap(),
+                        denied,
+                        &store,
+                        actors()
+                    ),
+                    Err(RecordingError::Context(
+                        agent_bridge::context::ContextError::InstructionUnauthorized
+                    ))
+                ));
+                let mut wrong_issuer = context_task(&manifest, &resources);
+                wrong_issuer.policy =
+                    policy(selected.clone(), ActorId::new("untrusted-issuer").unwrap());
+                assert!(matches!(
+                    session.start_recorded_context_run(
+                        RunId::new("wrong-issuer").unwrap(),
+                        wrong_issuer,
+                        &store,
+                        actors()
+                    ),
+                    Err(RecordingError::Context(
+                        agent_bridge::context::ContextError::InstructionUnauthorized
+                    ))
+                ));
+            }
+            let mut task = context_task(&manifest, &resources);
+            task.policy = policy(selected, actors().host);
+            let mut run = session
+                .start_recorded_context_run(
+                    RunId::new(format!("approved-{index}")).unwrap(),
+                    task,
+                    &store,
+                    actors(),
+                )
+                .unwrap();
+            while recorded_next(&mut run).await.is_some() {}
+        }
+    }
+    connection.shutdown().await.unwrap();
+    drop(store);
+    let reopened = agent_bridge::records::SqliteStore::open(database).unwrap();
+    let prepared: Vec<_> = input_receipts(&reopened)
+        .into_iter()
+        .filter(|receipt| receipt["state"] == "prepared")
+        .collect();
+    assert_eq!(prepared.len(), 2);
+    for (index, revision) in ["v1", "v2"].iter().enumerate() {
+        assert_eq!(prepared[index]["version"], 3);
+        assert_eq!(
+            prepared[index]["instruction_authority"]["requester"],
+            delegate.as_str()
+        );
+        assert_eq!(
+            prepared[index]["instruction_authority"]["granted_instructions"][0]["resource"]["revision"],
+            *revision
+        );
+    }
+    assert!(
+        prepared[0]["wire_text"]
+            .as_str()
+            .unwrap()
+            .contains("original style")
+    );
+    assert!(
+        !prepared[0]["wire_text"]
+            .as_str()
+            .unwrap()
+            .contains("new style")
+    );
+    assert_eq!(
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("session/prompt"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn explicit_omissions_are_recorded_separately_from_the_delivered_manifest() {
+    use agent_bridge::context::{ContextItem, ContextOmission, ContextPolicy};
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let missing = agent_bridge::ResourceRef {
+        id: agent_bridge::ResourceId::new("optional-input").unwrap(),
+        revision: "v1".into(),
+    };
+    let manifest = agent_bridge::ContextManifest {
+        resources: vec![missing.clone()],
+        ..Default::default()
+    };
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut task = context_task(&manifest, &resources);
+        task.policy = ContextPolicy {
+            omissions: vec![ContextOmission {
+                item: ContextItem::Resource(missing),
+                reason: "not needed for this assignment".into(),
+            }],
+            ..Default::default()
+        };
+        let mut run = session
+            .start_recorded_context_run(RunId::new("omitted").unwrap(), task, &store, actors())
+            .unwrap();
+        assert_eq!(run.run().spec().context, Default::default());
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    let receipts = input_receipts(&store);
+    assert!(receipts.iter().all(|receipt| receipt["version"] == 3));
+    assert_eq!(
+        receipts[0]["requested_context"]["resources"][0]["id"],
+        "optional-input"
+    );
+    assert_eq!(
+        receipts[0]["omissions"][0]["reason"],
+        "not needed for this assignment"
+    );
+    assert!(
+        !receipts[0]["wire_text"]
+            .as_str()
+            .unwrap()
+            .contains("optional-input")
+    );
+}
+
 fn portable_policy(
     manifest: agent_bridge::ContextManifest,
 ) -> agent_bridge::acp::RestorationPolicy {
     agent_bridge::acp::RestorationPolicy::Portable(agent_bridge::acp::PortableRestore {
+        policy: if manifest.instructions.is_empty() {
+            Default::default()
+        } else {
+            agent_bridge::context::ContextPolicy::for_host(
+                actors().host,
+                manifest.instructions.clone(),
+            )
+        },
         session_id: SessionId::new("app-session").unwrap(),
         slot_id: SlotId::new("new-slot").unwrap(),
         cwd: std::env::current_dir().unwrap(),
@@ -1147,6 +1405,7 @@ async fn image_blocks_are_deduplicated_and_receipts_reference_retained_bytes() {
             .start_recorded_context_run(
                 RunId::new("image").unwrap(),
                 agent_bridge::acp::ContextTask {
+                    policy: Default::default(),
                     prompt: "Describe the image",
                     manifest: &manifest,
                     resources: &store,
@@ -1258,6 +1517,14 @@ fn context_task<'a>(
     resources: &'a agent_bridge::context::MemoryResourceStore,
 ) -> agent_bridge::acp::ContextTask<'a, agent_bridge::context::MemoryResourceStore> {
     agent_bridge::acp::ContextTask {
+        policy: if manifest.instructions.is_empty() {
+            Default::default()
+        } else {
+            agent_bridge::context::ContextPolicy::for_host(
+                actors().host,
+                manifest.instructions.clone(),
+            )
+        },
         prompt: "Use the selected context",
         manifest,
         resources,

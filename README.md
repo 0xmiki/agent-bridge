@@ -30,6 +30,8 @@ delivery adds native image blocks and receipt digests without copying base64 int
 each saved transcript. Support still depends on the selected provider model.
 [Restoration policies](docs/restoration.md) explicitly choose native resume or a
 new provider session with selected portable context, and retain a report of that choice.
+[Context policies](docs/context-policy.md) authorize exact instruction revisions
+and record explicit omissions without silently skipping missing inputs.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared

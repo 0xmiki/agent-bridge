@@ -52,6 +52,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         revision: "v1".into(),
     };
     resources.put(Resource { reference: instruction.clone(), media_type: "text/plain".into(), bytes: Arc::from(b"Answer the task using the selected history. Reply only with the exact codename. Do not use tools.".as_slice()) })?;
+    resources.put(Resource { reference: ResourceRef { id:instruction.id.clone(), revision:"v2".into() }, media_type:"text/plain".into(), bytes:Arc::from(b"For this turn, supersede the earlier answer style. Reply only with the shipping codename in UPPERCASE. Do not use tools.".as_slice()) })?;
     let manifest = ContextManifest {
         records: vec![selected.record.id.clone()],
         instructions: vec![InstructionRef {
@@ -70,44 +71,73 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 vec![],
             )
             .await?;
-        let mut run = session.start_recorded_context_run(
-            RunId::new(format!("run-{unique}"))?,
-            ContextTask {
-                prompt: "What is the shipping codename?",
-                manifest: &manifest,
-                resources: &resources,
-                limits: ContextLimits {
-                    max_items: 10,
-                    max_resource_bytes: 4096,
-                },
-                max_prompt_bytes: 16384,
-                mode: TextContextMode::AppendToNative,
-            },
-            &store,
-            RecordActors {
-                user: ActorId::new("user")?,
-                agent: ActorId::new("assistant")?,
-                host: ActorId::new("example")?,
-            },
-        )?;
-        let mut answer = String::new();
-        while let Some(event) = run.next().await? {
-            match event {
-                AcpEvent::Update(SessionUpdate::AgentMessageChunk(chunk)) => {
-                    if let ContentBlock::Text(text) = chunk.content {
-                        answer.push_str(&text.text);
-                    }
-                }
-                AcpEvent::Permission { id, .. } if run.permission_pending(&id) => {
-                    run.respond(id, None)?
-                }
-                _ => {}
+        for index in 0..2 {
+            let mut current = manifest.clone();
+            if index == 1 {
+                current.instructions[0].resource.revision = "v2".into();
             }
+            let mut policy = agent_bridge::context::ContextPolicy::for_host(
+                ActorId::new("example")?,
+                current.instructions.clone(),
+            );
+            if index == 1 {
+                let optional = ResourceRef {
+                    id: ResourceId::new("optional-context")?,
+                    revision: "v1".into(),
+                };
+                current.resources.push(optional.clone());
+                policy
+                    .omissions
+                    .push(agent_bridge::context::ContextOmission {
+                        item: agent_bridge::context::ContextItem::Resource(optional),
+                        reason: "not needed for this turn".into(),
+                    });
+            }
+            let mut run = session.start_recorded_context_run(
+                RunId::new(format!("run-{unique}-{index}"))?,
+                ContextTask {
+                    policy,
+                    prompt: "What is the shipping codename?",
+                    manifest: &current,
+                    resources: &resources,
+                    limits: ContextLimits {
+                        max_items: 10,
+                        max_resource_bytes: 4096,
+                    },
+                    max_prompt_bytes: 16384,
+                    mode: TextContextMode::AppendToNative,
+                },
+                &store,
+                RecordActors {
+                    user: ActorId::new("user")?,
+                    agent: ActorId::new("assistant")?,
+                    host: ActorId::new("example")?,
+                },
+            )?;
+            let mut answer = String::new();
+            while let Some(event) = run.next().await? {
+                match event {
+                    AcpEvent::Update(SessionUpdate::AgentMessageChunk(chunk)) => {
+                        if let ContentBlock::Text(text) = chunk.content {
+                            answer.push_str(&text.text);
+                        }
+                    }
+                    AcpEvent::Permission { id, .. } if run.permission_pending(&id) => {
+                        run.respond(id, None)?
+                    }
+                    _ => {}
+                }
+            }
+            let expected = if index == 0 {
+                marker.clone()
+            } else {
+                marker.to_uppercase()
+            };
+            if answer.trim() != expected {
+                return Err("agent did not return the selected history's codename".into());
+            }
+            println!("Selected history and supplemental text produced the expected answer.");
         }
-        if answer.trim() != marker {
-            return Err("agent did not return the selected history's codename".into());
-        }
-        println!("Selected history and supplemental text produced the expected answer.");
         Ok::<_, Box<dyn Error>>(())
     })
     .await;
@@ -129,13 +159,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             _ => None,
         })
         .collect();
-    if receipts.len() != 3
+    if receipts.len() != 6
         || receipts[0]["state"] != "prepared"
         || receipts[1]["state"] != "dispatch_attempted"
         || receipts[2]["state"] != "response_received"
+        || receipts[3]["instruction_authority"]["granted_instructions"][0]["resource"]["revision"]
+            != "v2"
+        || receipts[0]["instruction_authority"]["granted_instructions"][0]["resource"]["revision"]
+            != "v1"
+        || receipts[3]["omissions"].as_array().map(Vec::len) != Some(1)
     {
         return Err("input receipt sequence was not preserved".into());
     }
-    println!("Exact text input and delivery evidence survived SQLite reopen.");
+    println!(
+        "Instruction revisions, omission reasons, and delivery evidence survived SQLite reopen."
+    );
     Ok(())
 }

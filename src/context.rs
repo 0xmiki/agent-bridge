@@ -8,6 +8,58 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Host-issued permission to supply these exact instruction revisions and roles.
+/// The host authenticates issuer/requester identities; this is not a bearer credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstructionGrant {
+    pub issuer: crate::ActorId,
+    pub subject: crate::ActorId,
+    pub instructions: Vec<InstructionRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstructionAuthorization {
+    pub requester: crate::ActorId,
+    pub grant: InstructionGrant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextItem {
+    Record(crate::RecordId),
+    Instruction(InstructionRef),
+    Resource(ResourceRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextOmission {
+    pub item: ContextItem,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ContextPolicy {
+    pub omissions: Vec<ContextOmission>,
+    pub instruction_authorization: Option<Arc<InstructionAuthorization>>,
+}
+
+impl ContextPolicy {
+    /// Explicit host-owned selection. Delegated selections use a grant naming
+    /// their actual requester instead of this convenience constructor.
+    pub fn for_host(host: crate::ActorId, instructions: Vec<InstructionRef>) -> Self {
+        Self {
+            omissions: vec![],
+            instruction_authorization: Some(Arc::new(InstructionAuthorization {
+                requester: host.clone(),
+                grant: InstructionGrant {
+                    issuer: host.clone(),
+                    subject: host,
+                    instructions,
+                },
+            })),
+        }
+    }
+}
+
 /// Immutable bytes at an application-assigned revision. Revision labels are not hashes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resource {
@@ -107,6 +159,8 @@ pub struct PreparedInstruction {
 /// Resolved evidence only. It is not a provider prompt or proof of delivery.
 #[derive(Debug, Clone)]
 pub struct PreparedContext {
+    pub requested_manifest: ContextManifest,
+    pub policy: ContextPolicy,
     pub manifest: ContextManifest,
     pub records: Vec<Arc<Snapshot>>,
     pub instructions: Vec<PreparedInstruction>,
@@ -117,6 +171,9 @@ pub struct PreparedContext {
 
 #[derive(Debug)]
 pub enum ContextError {
+    InstructionUnauthorized,
+    InvalidOmission,
+    ReferencedOmission(ResourceRef),
     Store(StoreError),
     Resource {
         reference: ResourceRef,
@@ -149,6 +206,89 @@ pub fn prepare(
     allowed_sessions: &[SessionId],
     limits: ContextLimits,
 ) -> Result<PreparedContext, ContextError> {
+    prepare_inner(manifest, records, resources, allowed_sessions, limits, &[])
+}
+
+/// Policy applies to explicit selections. Missing inputs are omitted only when
+/// named here, and omitted instructions still require an exact grant.
+pub fn prepare_with_policy(
+    manifest: &ContextManifest,
+    records: &impl RecordStore,
+    resources: &impl ResourceStore,
+    allowed_sessions: &[SessionId],
+    limits: ContextLimits,
+    policy: &ContextPolicy,
+) -> Result<PreparedContext, ContextError> {
+    check_count(manifest, limits)?;
+    if policy.omissions.len() > limits.max_items {
+        return Err(ContextError::ItemLimit);
+    }
+    if policy
+        .instruction_authorization
+        .as_ref()
+        .is_some_and(|authorization| authorization.grant.instructions.len() > limits.max_items)
+    {
+        return Err(ContextError::ItemLimit);
+    }
+    match &policy.instruction_authorization {
+        Some(authorization)
+            if authorization.requester != authorization.grant.subject
+                || manifest
+                    .instructions
+                    .iter()
+                    .any(|instruction| !authorization.grant.instructions.contains(instruction)) =>
+        {
+            return Err(ContextError::InstructionUnauthorized);
+        }
+        None if !manifest.instructions.is_empty() => {
+            return Err(ContextError::InstructionUnauthorized);
+        }
+        _ => {}
+    }
+    let mut selected = manifest.clone();
+    let mut omitted = vec![];
+    let mut forbidden = vec![];
+    for omission in &policy.omissions {
+        if omission.reason.trim().is_empty() || omitted.contains(&omission.item) {
+            return Err(ContextError::InvalidOmission);
+        }
+        let exists = match &omission.item {
+            ContextItem::Record(id) => {
+                let exists = selected.records.contains(id);
+                selected.records.retain(|item| item != id);
+                exists
+            }
+            ContextItem::Instruction(instruction) => {
+                let exists = selected.instructions.contains(instruction);
+                selected.instructions.retain(|item| item != instruction);
+                exists
+            }
+            ContextItem::Resource(reference) => {
+                let exists = selected.resources.contains(reference);
+                selected.resources.retain(|item| item != reference);
+                forbidden.push(reference.clone());
+                exists
+            }
+        };
+        if !exists {
+            return Err(ContextError::InvalidOmission);
+        }
+        omitted.push(omission.item.clone());
+    }
+    let mut prepared = prepare_inner(
+        &selected,
+        records,
+        resources,
+        allowed_sessions,
+        limits,
+        &forbidden,
+    )?;
+    prepared.requested_manifest = manifest.clone();
+    prepared.policy = policy.clone();
+    Ok(prepared)
+}
+
+fn check_count(manifest: &ContextManifest, limits: ContextLimits) -> Result<(), ContextError> {
     manifest
         .records
         .len()
@@ -156,12 +296,26 @@ pub fn prepare(
         .and_then(|count| count.checked_add(manifest.resources.len()))
         .filter(|count| *count <= limits.max_items)
         .ok_or(ContextError::ItemLimit)?;
+    Ok(())
+}
+
+fn prepare_inner(
+    manifest: &ContextManifest,
+    records: &impl RecordStore,
+    resources: &impl ResourceStore,
+    allowed_sessions: &[SessionId],
+    limits: ContextLimits,
+    forbidden: &[ResourceRef],
+) -> Result<PreparedContext, ContextError> {
+    check_count(manifest, limits)?;
     let mut remaining = limits.max_items;
     let mut consume = || {
         remaining = remaining.checked_sub(1).ok_or(ContextError::ItemLimit)?;
         Ok::<_, ContextError>(())
     };
     let mut prepared = PreparedContext {
+        requested_manifest: manifest.clone(),
+        policy: ContextPolicy::default(),
         manifest: manifest.clone(),
         records: vec![],
         instructions: vec![],
@@ -170,6 +324,9 @@ pub fn prepare(
     };
     let mut resolved: HashMap<ResourceKey, Arc<Resource>> = HashMap::new();
     let mut resolve = |reference: &ResourceRef| -> Result<Arc<Resource>, ContextError> {
+        if forbidden.contains(reference) {
+            return Err(ContextError::ReferencedOmission(reference.clone()));
+        }
         let key = (reference.id.clone(), reference.revision.clone());
         if let Some(resource) = resolved.get(&key) {
             return Ok(resource.clone());
