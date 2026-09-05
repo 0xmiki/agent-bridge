@@ -1,0 +1,7 @@
+[package]
+name = "agent-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "Connect applications to installed AI agents"
+
+[dependencies]
