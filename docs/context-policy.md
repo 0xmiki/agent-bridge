@@ -3,6 +3,8 @@
 `ContextTask` and `PortableRestore` now require a `ContextPolicy`. Its default is
 strict: no omissions and no authority to supply declared instructions. Use that
 default for selections containing only history and resources.
+Versioned [skill requests](skills.md) use `ContextPolicy.skills` and the same exact
+instruction-grant boundary. Their delivery and activation evidence remain separate.
 
 `prepare` remains a provider-independent resolution primitive. Use
 `prepare_with_policy` when inspecting a policy-controlled selection. Recorded ACP

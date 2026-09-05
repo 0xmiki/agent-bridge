@@ -31,7 +31,7 @@ bridge cannot attest its contents or completeness. This is not a portable snapsh
 
 ```rust,ignore
 let mut restored = connection.restore(
-    RestorationPolicy::Portable(PortableRestore {
+    RestorationPolicy::portable(PortableRestore {
         policy: ContextPolicy::for_host(host_actor.clone(), selected_context.instructions.clone()),
         session_id: conversation_id,
         slot_id: destination_slot,

@@ -23,7 +23,13 @@ pub struct PortableRestore {
 #[derive(Debug, Clone)]
 pub enum RestorationPolicy {
     Native { continuation: ContinuationId },
-    Portable(PortableRestore),
+    Portable(Box<PortableRestore>),
+}
+
+impl RestorationPolicy {
+    pub fn portable(plan: PortableRestore) -> Self {
+        Self::Portable(Box::new(plan))
+    }
 }
 
 struct PendingContext {
@@ -112,6 +118,9 @@ impl AcpConnection {
                 {
                     report["version"] = json!(2);
                     report["context_policy"] = super::context::policy_evidence(&context);
+                }
+                if !context.policy.skills.is_empty() {
+                    report["version"] = json!(3);
                 }
                 let session = self
                     .new_session(plan.session_id, plan.slot_id, plan.cwd, mcp)

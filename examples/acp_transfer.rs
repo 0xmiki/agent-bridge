@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let destination = AcpConnection::connect(destination_launch).await?;
         println!("Destination: {:?}", destination.info().agent_info);
         let result = async {
-            let mut restored = destination.restore(RestorationPolicy::Portable(PortableRestore {
+            let mut restored = destination.restore(RestorationPolicy::portable(PortableRestore {
                 policy:Default::default(),
                 session_id:session_id.clone(), slot_id:SlotId::new("destination-slot")?, cwd:workspace.into(),
                 manifest:ContextManifest { records:selected, ..Default::default() }, limits:ContextLimits { max_items:100, max_resource_bytes:65536 },

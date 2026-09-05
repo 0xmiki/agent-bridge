@@ -53,6 +53,7 @@ use tools.` All three use the same `providers` example and `AcpDriver`.
 | Portable conversation transfer | Passed to/from Codex | Passed to/from OpenCode | Deferred |
 | Authorized supplemental revision change and explicit omission | Passed | Passed | Deferred |
 | Typed JSON background task with host validation | Passed | Passed | Deferred |
+| Versioned skill-text fallback | Passed September 6 | Passed September 6 | Deferred |
 
 Codex used local codex-cli 0.153.4 via the explicit override. Claude used the
 adapter's Claude Agent SDK 0.3.257. Claude returned ACP's structured authentication

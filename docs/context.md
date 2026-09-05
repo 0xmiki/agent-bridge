@@ -93,8 +93,9 @@ memory allocated while constructing the envelope.
 
 The recorder writes immutable `Payload::Extension` records with namespace
 `agent_bridge`, name `input_receipt`, and an inner data version. Version 1 covers
-policy-free text, version 2 adds images, and version 3 adds policy evidence described
-in [context policies](context-policy.md). Consumers must check all three identifiers.
+policy-free text, version 2 adds images, version 3 adds policy evidence described
+in [context policies](context-policy.md), and version 4 adds [skill evidence](skills.md).
+Consumers must check all three identifiers.
 Subsequent receipts refer to the same run through its
 record attribution; only the preparation receipt includes the wire text.
 
@@ -204,4 +205,5 @@ verification remains deferred. [Restoration policy](restoration.md) now makes na
 resume and portable selection explicit. [Instruction grants and omission policies](context-policy.md)
 now govern declared instruction changes and excluded selections. Native base
 replacement remains unsupported. [Structured-result validation](structured-results.md)
-now supports typed background tasks; versioned skills remain M3 work.
+now supports typed background tasks. [Versioned skill inputs](skills.md) now have
+explicit text fallback and omission policies; native activation remains unverified.

@@ -777,6 +777,200 @@ fn actors() -> RecordActors {
     }
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn skill_receipts_distinguish_text_delivery_from_native_activation() {
+    use agent_bridge::context::{ContextPolicy, ResourceArchive, SkillDelivery, SkillRequest};
+    let files = TestFiles::new();
+    let path = files.path("skills.sqlite3");
+    let log = files.path("messages");
+    let store = agent_bridge::records::SqliteStore::open(&path).unwrap();
+    let reference = agent_bridge::ResourceRef {
+        id: agent_bridge::ResourceId::new("format-skill").unwrap(),
+        revision: "v1".into(),
+    };
+    store
+        .put(agent_bridge::context::Resource {
+            reference: reference.clone(),
+            media_type: "text/markdown".into(),
+            bytes: std::sync::Arc::from(b"# Format skill\nBe concise.".as_slice()),
+        })
+        .unwrap();
+    let manifest = agent_bridge::ContextManifest::default();
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        for (index, delivery) in [
+            SkillDelivery::RequireNative,
+            SkillDelivery::SupplementalText,
+            SkillDelivery::Omit {
+                reason: "host chose to skip".into(),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut policy = ContextPolicy::for_host(
+                actors().host,
+                vec![agent_bridge::InstructionRef {
+                    resource: reference.clone(),
+                    role: agent_bridge::InstructionRole::Supplemental,
+                }],
+            );
+            policy.skills.push(SkillRequest {
+                resource: reference.clone(),
+                delivery,
+            });
+            let task = agent_bridge::acp::ContextTask {
+                policy,
+                prompt: "Hello",
+                manifest: &manifest,
+                resources: &store,
+                limits: agent_bridge::context::ContextLimits {
+                    max_items: 10,
+                    max_resource_bytes: 1024,
+                },
+                max_prompt_bytes: 8192,
+                mode: agent_bridge::acp::ContextMode::AppendToNative,
+            };
+            let result = session.start_recorded_context_run(
+                RunId::new(format!("skill-{index}")).unwrap(),
+                task,
+                &store,
+                actors(),
+            );
+            if index == 0 {
+                assert!(matches!(result, Err(RecordingError::UnsupportedContext(_))));
+            } else {
+                let mut run = result.unwrap();
+                while recorded_next(&mut run).await.is_some() {}
+            }
+        }
+    }
+    connection.shutdown().await.unwrap();
+    drop(store);
+    let reopened = agent_bridge::records::SqliteStore::open(path).unwrap();
+    let receipts: Vec<_> = input_receipts(&reopened)
+        .into_iter()
+        .filter(|r| r["state"] == "prepared")
+        .collect();
+    assert_eq!(receipts.len(), 2);
+    for receipt in &receipts {
+        assert_eq!(receipt["version"], 4);
+        assert_eq!(receipt["skills"][0]["native_activation"], "not_observed");
+        assert_eq!(receipt["skills"][0]["native_availability"], "unknown");
+    }
+    assert_eq!(
+        receipts[0]["skills"][0]["planned_delivery"],
+        "supplemental_text"
+    );
+    assert_eq!(receipts[0]["skills"][0]["local_availability"], "resolved");
+    assert!(
+        receipts[0]["wire_text"]
+            .as_str()
+            .unwrap()
+            .contains("Be concise.")
+    );
+    assert_eq!(
+        receipts[1]["skills"][0]["local_availability"],
+        "not_checked"
+    );
+    assert_eq!(receipts[1]["skills"][0]["reason"], "host chose to skip");
+    assert!(
+        !receipts[1]["wire_text"]
+            .as_str()
+            .unwrap()
+            .contains("Be concise.")
+    );
+    assert_eq!(
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("session/prompt"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn portable_skill_fallback_retains_its_policy_and_rejects_native_requirements() {
+    use agent_bridge::context::{SkillDelivery, SkillRequest};
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let reference = agent_bridge::ResourceRef {
+        id: agent_bridge::ResourceId::new("portable-skill").unwrap(),
+        revision: "v1".into(),
+    };
+    resources
+        .put(agent_bridge::context::Resource {
+            reference: reference.clone(),
+            media_type: "text/plain".into(),
+            bytes: std::sync::Arc::from(b"Be precise.".as_slice()),
+        })
+        .unwrap();
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    std::fs::write(&log, "").unwrap();
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    let mut policy = portable_policy(Default::default());
+    let agent_bridge::acp::RestorationPolicy::Portable(plan) = &mut policy else {
+        unreachable!()
+    };
+    plan.policy = agent_bridge::context::ContextPolicy::for_host(
+        actors().host,
+        vec![agent_bridge::InstructionRef {
+            resource: reference.clone(),
+            role: agent_bridge::InstructionRole::Supplemental,
+        }],
+    );
+    plan.policy.skills.push(SkillRequest {
+        resource: reference,
+        delivery: SkillDelivery::RequireNative,
+    });
+    assert!(matches!(
+        connection
+            .restore(policy.clone(), &store, &resources, vec![])
+            .await,
+        Err(RecordingError::UnsupportedContext(_))
+    ));
+    assert!(
+        !std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("session/new")
+    );
+    let agent_bridge::acp::RestorationPolicy::Portable(plan) = &mut policy else {
+        unreachable!()
+    };
+    plan.policy.skills[0].delivery = SkillDelivery::SupplementalText;
+    {
+        let mut restored = connection
+            .restore(policy, &store, &resources, vec![])
+            .await
+            .unwrap();
+        assert_eq!(restored.report()["version"], 3);
+        assert_eq!(
+            restored.report()["context_policy"]["skills"][0]["native_activation"],
+            "not_observed"
+        );
+        let mut run = restored
+            .start_recorded_run(
+                RunId::new("skill-restored").unwrap(),
+                "Hello",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+}
+
 #[cfg(feature = "structured")]
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1155,6 +1349,7 @@ async fn instruction_revision_changes_require_exact_grants_and_preserve_prior_re
     };
     let delegate = ActorId::new("agent-proposing-change").unwrap();
     let policy = |instruction: InstructionRef, issuer: ActorId| ContextPolicy {
+        skills: vec![],
         omissions: vec![],
         instruction_authorization: Some(std::sync::Arc::new(InstructionAuthorization {
             requester: delegate.clone(),
@@ -1311,7 +1506,7 @@ async fn explicit_omissions_are_recorded_separately_from_the_delivered_manifest(
 fn portable_policy(
     manifest: agent_bridge::ContextManifest,
 ) -> agent_bridge::acp::RestorationPolicy {
-    agent_bridge::acp::RestorationPolicy::Portable(agent_bridge::acp::PortableRestore {
+    agent_bridge::acp::RestorationPolicy::portable(agent_bridge::acp::PortableRestore {
         policy: if manifest.instructions.is_empty() {
             Default::default()
         } else {

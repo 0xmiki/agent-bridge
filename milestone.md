@@ -19,11 +19,11 @@ tool use must also work in examples independent of those applications.
 
 ## Current position
 
-Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
+Status reviewed September 6, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
 
 - M0 and M1 are complete. M2 is accepted for OpenCode and Codex, with Claude's
   authenticated workflows deferred at the user's request.
-- **M3 is in progress: explicit context preparation, instructions, and rich tasks.**
+- **M3 is complete within the documented ACP scope. M4, tools and composition, is next.**
 - The M2 provider increment passes 118 tests, Clippy, documentation generation,
   and separate core, records, ACP, SQLite, and providers feature builds.
 - The first M3 increment passes 125 Rust tests, Clippy, documentation generation,
@@ -38,6 +38,8 @@ Status reviewed September 5, 2026. M0's baseline is `10b9113`; M1 evidence is li
   OpenCode and Codex passed the two-revision supplemental-guidance example.
 - Structured-result validation adds seven tests, for 152 total. OpenCode and Codex
   passed the typed background-task example with persisted validation evidence.
+- Versioned skill inputs add four tests, for 156 total. Both providers passed
+  explicit skill-text fallback; native skill registration/activation remains unverified.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -55,7 +57,7 @@ been released. M8 defines the first release gate.
 | M0 | Execution and persistence foundation | Complete | — |
 | M1 | Model selection and attributable run configuration | Complete | M0 |
 | M2 | Verified multi-provider integration and setup | Accepted with Claude verification deferred | M1 |
-| M3 | Explicit context, instructions, and rich tasks | In progress | M2 |
+| M3 | Explicit context, instructions, and rich tasks | Complete | M2 |
 | M4 | Application tools, authority, and execution composition | Planned | M3 |
 | M5 | Durable execution bookkeeping and bounded recovery | Planned | M4 |
 | M6 | TypeScript SDK, subprocess host, and Tauri plugin | Planned | M5 |
@@ -189,8 +191,10 @@ JSON deserialization, optional application rules, explicit rejection of required
 native enforcement, and contract/validation receipts. A completed run is not
 automatically a valid result. The background example passed with OpenCode and Codex.
 
-Next slice: versioned skills and explicit fallback behavior, the final remaining
-M3 checklist item. Then review the examples against the milestone's completion gate.
+The seventh increment adds [versioned skill documents](docs/skills.md), exact grants,
+explicit native requirements/text fallback/omission, and separate local-availability
+and native-activation evidence. The current ACP driver rejects required native skill
+activation; text fallback is opt-in and never reported as native activation.
 
 - [x] Resolve explicit context manifests from stored records and resources.
 - [x] Record what the bridge supplied, including instruction revisions and omissions.
@@ -200,12 +204,28 @@ M3 checklist item. Then review the examples against the milestone's completion g
 - [x] Define explicit native-resume versus portable-context restoration policies.
 - [x] Add structured-result validation; distinguish native enforcement from validation
   of unconstrained output.
-- [ ] Represent skills as versioned inputs where supported, distinguishing availability
+- [x] Represent skills as versioned inputs where supported, distinguishing availability
   from observed activation. Define the fallback policy where native skills are absent.
 
 Done when independent examples cover an interactive conversation with selected
 context, an image-based task, and a background task returning validated data. A
 provider switch reports the context transferred and anything it could not preserve.
+
+Completion review, September 6, 2026:
+
+| Acceptance case | Evidence |
+| --- | --- |
+| Conversation with selected context and revised guidance | `acp_context`, passed with OpenCode and Codex; receipts survive SQLite reopen. |
+| Image task | `acp_image`, passed with Codex and OpenCode MiMo; Big Pickle's failed check remains documented. |
+| Background task returning validated data | `acp_background`, passed with OpenCode and Codex; host validation stays separate from native enforcement. |
+| Provider switch with transfer limits | `acp_transfer`, passed in both directions; selection and non-transferred state categories are retained. |
+| Versioned skills and explicit fallback | `acp_context` skill mode, passed with both providers; native availability/activation is not inferred. |
+
+All 156 Rust tests, Clippy, documentation generation, and independent feature builds
+pass. M3 completion does not claim native base-instruction replacement, native JSON
+enforcement, native skill activation, or verified Claude workflows. Those limits
+remain explicit; extending support requires new capability and verification evidence.
+The next implementation target is M4's application-tool contract and MCP integration.
 
 ## M4 — Tools, authority, and composition
 
@@ -303,6 +323,10 @@ of every CLI, a workflow DSL, and a universal chat UI are outside the alpha targ
 The extension boundaries should leave room for them without requiring them now.
 
 ## Plan changes
+
+- September 6, 2026: completed M3's documented context, image, transfer, validation,
+  and skill-fallback acceptance cases. M4 is next; native-only capability limits and
+  deferred Claude verification remain visible in the compatibility evidence.
 
 - September 5, 2026: user approved progressing without Claude access. M2 is accepted
   for the verified OpenCode/Codex scope; authenticated Claude workflows remain an

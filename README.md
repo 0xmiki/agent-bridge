@@ -34,6 +34,8 @@ new provider session with selected portable context, and retain a report of that
 and record explicit omissions without silently skipping missing inputs.
 The optional [structured-result API](docs/structured-results.md) validates typed
 JSON and application rules, with persisted evidence separate from run completion.
+[Versioned skill inputs](docs/skills.md) support explicit text fallback or omission,
+without equating document delivery with native activation.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared

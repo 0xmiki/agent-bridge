@@ -25,6 +25,102 @@ fn limits() -> ContextLimits {
 }
 
 #[test]
+fn skill_text_requires_exact_authority_and_keeps_its_versioned_identity() {
+    let records = MemoryStore::default();
+    let resources = MemoryResourceStore::default();
+    resources.put(resource("v1", b"skill version one")).unwrap();
+    resources.put(resource("v2", b"skill version two")).unwrap();
+    let manifest = ContextManifest::default();
+    let skill = SkillRequest {
+        resource: reference("v1"),
+        delivery: SkillDelivery::SupplementalText,
+    };
+    let mut policy = ContextPolicy {
+        skills: vec![skill.clone()],
+        ..Default::default()
+    };
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InstructionUnauthorized)
+    ));
+    let authorized = InstructionRef {
+        resource: reference("v1"),
+        role: InstructionRole::Supplemental,
+    };
+    policy.instruction_authorization =
+        ContextPolicy::for_host(ActorId::new("host").unwrap(), vec![authorized.clone()])
+            .instruction_authorization;
+    let prepared =
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy).unwrap();
+    assert!(prepared.requested_manifest.instructions.is_empty());
+    assert_eq!(prepared.manifest.instructions, vec![authorized]);
+    assert_eq!(prepared.policy.skills, vec![skill]);
+    assert_eq!(prepared.resources[0].bytes.as_ref(), b"skill version one");
+    policy.skills[0].resource.revision = "v2".into();
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InstructionUnauthorized)
+    ));
+}
+
+#[test]
+fn skill_omission_is_explicit_and_conflicting_selections_are_rejected() {
+    let records = MemoryStore::default();
+    let resources = MemoryResourceStore::default();
+    let instruction = InstructionRef {
+        resource: reference("v1"),
+        role: InstructionRole::Supplemental,
+    };
+    let mut policy =
+        ContextPolicy::for_host(ActorId::new("host").unwrap(), vec![instruction.clone()]);
+    policy.skills.push(SkillRequest {
+        resource: reference("v1"),
+        delivery: SkillDelivery::Omit {
+            reason: "not required".into(),
+        },
+    });
+    let empty = ContextManifest::default();
+    assert!(
+        prepare_with_policy(&empty, &records, &resources, &[], limits(), &policy)
+            .unwrap()
+            .resources
+            .is_empty()
+    );
+    let manifest = ContextManifest {
+        resources: vec![reference("v1")],
+        ..Default::default()
+    };
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::ReferencedOmission(_))
+    ));
+    policy.skills.push(policy.skills[0].clone());
+    assert!(matches!(
+        prepare_with_policy(&empty, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InvalidSkillRequest)
+    ));
+    policy.skills.pop();
+    policy.skills[0].delivery = SkillDelivery::Omit { reason: " ".into() };
+    assert!(matches!(
+        prepare_with_policy(&empty, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InvalidSkillRequest)
+    ));
+    policy.skills[0].delivery = SkillDelivery::SupplementalText;
+    policy.omissions.push(ContextOmission {
+        item: ContextItem::Instruction(instruction.clone()),
+        reason: "conflicting omission".into(),
+    });
+    let manifest = ContextManifest {
+        instructions: vec![instruction],
+        ..Default::default()
+    };
+    assert!(matches!(
+        prepare_with_policy(&manifest, &records, &resources, &[], limits(), &policy),
+        Err(ContextError::InvalidSkillRequest)
+    ));
+}
+
+#[test]
 fn instruction_authority_pins_requester_revision_and_role_even_for_omissions() {
     let records = MemoryStore::default();
     let resources = MemoryResourceStore::default();

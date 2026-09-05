@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }],
         resources: vec![],
     };
+    let skill_fallback = std::env::var("AGENT_BRIDGE_SKILL_FALLBACK").ok().as_deref() == Some("1");
     let connection = AcpConnection::connect(launch).await?;
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let mut session = connection
@@ -80,6 +81,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ActorId::new("example")?,
                 current.instructions.clone(),
             );
+            if skill_fallback {
+                policy.skills.push(agent_bridge::context::SkillRequest {
+                    resource: current.instructions[0].resource.clone(),
+                    delivery: agent_bridge::context::SkillDelivery::SupplementalText,
+                });
+                current.instructions.clear();
+            }
             if index == 1 {
                 let optional = ResourceRef {
                     id: ResourceId::new("optional-context")?,
@@ -174,5 +182,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "Instruction revisions, omission reasons, and delivery evidence survived SQLite reopen."
     );
+    if skill_fallback {
+        for receipt in [&receipts[0], &receipts[3]] {
+            if receipt["version"] != 4
+                || receipt["skills"][0]["planned_delivery"] != "supplemental_text"
+                || receipt["skills"][0]["native_activation"] != "not_observed"
+            {
+                return Err("skill fallback evidence was not preserved".into());
+            }
+        }
+        println!(
+            "Skill document revisions were supplied as text; native activation was not claimed."
+        );
+    }
     Ok(())
 }

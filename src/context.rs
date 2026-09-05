@@ -38,8 +38,24 @@ pub struct ContextOmission {
 
 #[derive(Debug, Clone, Default)]
 pub struct ContextPolicy {
+    pub skills: Vec<SkillRequest>,
     pub omissions: Vec<ContextOmission>,
     pub instruction_authorization: Option<Arc<InstructionAuthorization>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillDelivery {
+    RequireNative,
+    SupplementalText,
+    Omit { reason: String },
+}
+
+/// An exact skill document revision. Bundled files/scripts must be represented
+/// separately; selecting a document never installs or executes a skill package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRequest {
+    pub resource: ResourceRef,
+    pub delivery: SkillDelivery,
 }
 
 impl ContextPolicy {
@@ -47,6 +63,7 @@ impl ContextPolicy {
     /// their actual requester instead of this convenience constructor.
     pub fn for_host(host: crate::ActorId, instructions: Vec<InstructionRef>) -> Self {
         Self {
+            skills: vec![],
             omissions: vec![],
             instruction_authorization: Some(Arc::new(InstructionAuthorization {
                 requester: host.clone(),
@@ -171,6 +188,7 @@ pub struct PreparedContext {
 
 #[derive(Debug)]
 pub enum ContextError {
+    InvalidSkillRequest,
     InstructionUnauthorized,
     InvalidOmission,
     ReferencedOmission(ResourceRef),
@@ -220,6 +238,25 @@ pub fn prepare_with_policy(
     policy: &ContextPolicy,
 ) -> Result<PreparedContext, ContextError> {
     check_count(manifest, limits)?;
+    let mut authorized_manifest = manifest.clone();
+    if policy.skills.len() > limits.max_items {
+        return Err(ContextError::ItemLimit);
+    }
+    let mut skill_refs = vec![];
+    for skill in &policy.skills {
+        if skill.resource.revision.trim().is_empty() || skill_refs.contains(&skill.resource) {
+            return Err(ContextError::InvalidSkillRequest);
+        }
+        if matches!(&skill.delivery, SkillDelivery::Omit { reason } if reason.trim().is_empty()) {
+            return Err(ContextError::InvalidSkillRequest);
+        }
+        skill_refs.push(skill.resource.clone());
+        authorized_manifest.instructions.push(InstructionRef {
+            resource: skill.resource.clone(),
+            role: crate::InstructionRole::Supplemental,
+        });
+    }
+    check_count(&authorized_manifest, limits)?;
     if policy.omissions.len() > limits.max_items {
         return Err(ContextError::ItemLimit);
     }
@@ -233,14 +270,14 @@ pub fn prepare_with_policy(
     match &policy.instruction_authorization {
         Some(authorization)
             if authorization.requester != authorization.grant.subject
-                || manifest
+                || authorized_manifest
                     .instructions
                     .iter()
                     .any(|instruction| !authorization.grant.instructions.contains(instruction)) =>
         {
             return Err(ContextError::InstructionUnauthorized);
         }
-        None if !manifest.instructions.is_empty() => {
+        None if !authorized_manifest.instructions.is_empty() => {
             return Err(ContextError::InstructionUnauthorized);
         }
         _ => {}
@@ -275,6 +312,28 @@ pub fn prepare_with_policy(
         }
         omitted.push(omission.item.clone());
     }
+    for skill in &policy.skills {
+        match &skill.delivery {
+            SkillDelivery::SupplementalText => {
+                let instruction = InstructionRef {
+                    resource: skill.resource.clone(),
+                    role: crate::InstructionRole::Supplemental,
+                };
+                if omitted.contains(&ContextItem::Instruction(instruction.clone())) {
+                    return Err(ContextError::InvalidSkillRequest);
+                }
+                if !selected.instructions.contains(&instruction) {
+                    selected.instructions.push(instruction);
+                }
+            }
+            SkillDelivery::RequireNative => {
+                if !selected.resources.contains(&skill.resource) {
+                    selected.resources.push(skill.resource.clone());
+                }
+            }
+            SkillDelivery::Omit { .. } => forbidden.push(skill.resource.clone()),
+        }
+    }
     let mut prepared = prepare_inner(
         &selected,
         records,
@@ -283,6 +342,28 @@ pub fn prepare_with_policy(
         limits,
         &forbidden,
     )?;
+    for skill in &policy.skills {
+        if matches!(skill.delivery, SkillDelivery::Omit { .. }) {
+            continue;
+        }
+        let resource = prepared
+            .resources
+            .iter()
+            .find(|r| r.reference == skill.resource)
+            .ok_or(ContextError::InvalidSkillRequest)?;
+        if !matches!(
+            resource
+                .media_type
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim(),
+            "text/plain" | "text/markdown"
+        ) || std::str::from_utf8(&resource.bytes).is_err()
+        {
+            return Err(ContextError::InvalidSkillRequest);
+        }
+    }
     prepared.requested_manifest = manifest.clone();
     prepared.policy = policy.clone();
     Ok(prepared)

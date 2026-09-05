@@ -44,7 +44,16 @@ pub(super) fn policy_evidence(context: &PreparedContext) -> Value {
         "issuer":authorization.grant.issuer.as_str(), "requester":authorization.requester.as_str(),
         "subject":authorization.grant.subject.as_str(), "granted_instructions":authorization.grant.instructions.iter().map(instruction).collect::<Vec<_>>()
     }));
-    json!({"omissions":omissions,"instruction_authority":authority,
+    let skills: Vec<_> = context.policy.skills.iter().map(|skill| {
+        let (delivery, availability, reason) = match &skill.delivery {
+            crate::context::SkillDelivery::RequireNative => ("require_native", "resolved", None),
+            crate::context::SkillDelivery::SupplementalText => ("supplemental_text", "resolved", None),
+            crate::context::SkillDelivery::Omit { reason } => ("omitted", "not_checked", Some(reason.as_str())),
+        };
+        json!({"resource":reference(&skill.resource),"planned_delivery":delivery,"local_availability":availability,
+            "native_availability":"unknown","native_activation":"not_observed","reason":reason})
+    }).collect();
+    json!({"skills":skills,"omissions":omissions,"instruction_authority":authority,
         "requested_context":{"records":context.requested_manifest.records.iter().map(|id|id.as_str()).collect::<Vec<_>>(),
             "instructions":context.requested_manifest.instructions.iter().map(instruction).collect::<Vec<_>>(),
             "resources":context.requested_manifest.resources.iter().map(reference).collect::<Vec<_>>()}})
@@ -77,6 +86,16 @@ pub(super) fn encode(
     images_allowed: bool,
     image_capability: bool,
 ) -> Result<(String, Vec<super::ContentBlock>, Value), super::RecordingError> {
+    if context
+        .policy
+        .skills
+        .iter()
+        .any(|skill| matches!(skill.delivery, crate::context::SkillDelivery::RequireNative))
+    {
+        return Err(super::RecordingError::UnsupportedContext(
+            "this ACP driver cannot guarantee native skill registration or activation",
+        ));
+    }
     let mut instructions = vec![];
     for instruction in &context.instructions {
         if instruction.reference.role == InstructionRole::Base {
@@ -240,6 +259,10 @@ pub(super) fn encode(
         for key in ["omissions", "instruction_authority", "requested_context"] {
             receipt[key] = evidence[key].clone();
         }
+    }
+    if !context.policy.skills.is_empty() {
+        receipt["version"] = json!(4);
+        receipt["skills"] = policy_evidence(context)["skills"].clone();
     }
     Ok((wire, blocks, receipt))
 }
