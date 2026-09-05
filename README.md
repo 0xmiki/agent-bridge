@@ -5,8 +5,9 @@ Shared integration for connecting applications to installed AI agents.
 Early Rust library for a provider-independent execution model. The API is still
 being developed.
 
-Read the [philosophy](philosophy.md) and [working model](docs/model.md). Both will
-evolve as we test the implementation against real agents.
+Read the [milestones](milestone.md) for current status and the next implementation
+target. The [philosophy](philosophy.md), [working model](docs/model.md), and roadmap
+will evolve as we test the implementation against real agents.
 
 Implemented so far: typed identifiers, slots and sessions, explicit context
 references, typed record envelopes, and an in-memory run lifecycle. The optional
