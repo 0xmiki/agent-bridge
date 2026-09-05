@@ -7,7 +7,9 @@
 //! No filesystem or terminal capabilities are advertised. This module does not
 //! log wire messages, install agents, or authenticate automatically.
 
+mod recording;
 mod session;
+pub use recording::{RecordActors, RecordedRun, RecordingError};
 pub use session::{AcpEvent, AcpRun, AcpSession, PermissionId};
 
 use std::{

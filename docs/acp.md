@@ -53,9 +53,10 @@ async fn ask(connection: &AcpConnection) -> Result<(), Box<dyn std::error::Error
     let mut run = session.start_run(RunId::new("run-1")?, "Explain this project.")?;
     while let Some(event) = run.next().await? {
         match event {
-            AcpEvent::Permission { id, .. } => run.respond(id, None)?,
+            AcpEvent::Permission { id, .. } if run.permission_pending(&id) => run.respond(id, None)?,
             AcpEvent::Update(update) => println!("{update:?}"),
             AcpEvent::Finished(reason) => println!("{reason:?}"),
+            _ => {},
         }
     }
     Ok(())
@@ -66,6 +67,8 @@ The snippet dismisses permissions. Real applications can show each request's off
 options and call `run.respond(id, Some(option_id))`. Invalid options leave the request
 pending. Permission IDs include their run identity so an earlier run's decision
 cannot resolve a later run's request. Callers must assign unique run IDs.
+Resolution events also report automatic cancellations. Check `permission_pending`
+before answering a queued request that may already have been resolved.
 
 One run exclusively borrows its session. After consuming its terminal result and
 dropping the run handle, another run can continue the same native session. Distinct
@@ -148,7 +151,8 @@ Native session history stays with the provider. The adapter sends only the new
 text and does not replay application history, resolve context manifests, or store
 continuation handles. The current empty core context manifest means no explicit
 record/resource selection was supplied; it does not mean the native session has
-no history. Input and events still need portable record conversion and persistence.
+no history. The optional [recorded-run wrapper](records.md) now assembles portable
+records in a local store. Disk persistence and continuation recovery remain open.
 
 Model selection, instruction injection, image input, native resume/close, structured
 output, and other client requests remain outside this step. Updates outside active

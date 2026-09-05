@@ -6,8 +6,9 @@ show a better boundary. See [philosophy.md](../philosophy.md) for the intent.
 
 Implementation checkpoints: the core types and lifecycle now have tests; the
 optional [ACP adapter](acp.md) can create sessions and stream text runs using the
-shared lifecycle. Its native events are not converted into portable records yet.
-No storage or provider-continuation contract is frozen by that adapter.
+shared lifecycle. [Recorded runs](records.md) assemble portable payloads through
+a provisional local store, currently in memory. No serialized schema, durable
+execution, or provider-continuation contract is frozen by that implementation.
 
 ## Four concepts
 
@@ -87,13 +88,15 @@ optional response relationships. Message content can reference a resource rather
 than copying its bytes. Streaming updates build an in-progress record; we do not
 need a durable row for every token.
 
-Messages, tool calls, tool results, interactions, artifacts, and errors will need
-distinct validated payloads. The initial Rust envelope accepts a typed payload;
-only message payloads are included in the first slice. A serialization format,
-namespaced extension registry, and schema migration policy remain open.
+The `records` feature now defines message, tool activity, permission, decision,
+completion, failure, and extension payloads. Open records accept revision-checked
+checkpoints; finalized records are immutable. A serialization format, resource
+store, namespaced extension registry, and migration policy remain open.
 
-An interaction request must eventually have an explicit response schema, scope,
-and resolution state. Storage must accept only one valid resolution atomically.
+Permission records preserve offered options and local delivery state. The memory
+store accepts one valid decision atomically with request finalization. General
+question schemas, permission scope enforcement, and durable delivery still need
+contracts.
 Tool declarations describe available operations; grants authorize execution.
 Neither ordinary metadata nor instruction text grants authority.
 

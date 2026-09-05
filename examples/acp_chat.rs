@@ -2,8 +2,9 @@
 use std::{io::Write, time::Duration};
 
 use agent_bridge::{
-    RunId, SessionId, SlotId,
-    acp::{AcpConnection, AcpEvent, AcpLaunch, ContentBlock, SessionUpdate},
+    ActorId, RunId, SessionId, SlotId,
+    acp::{AcpConnection, AcpEvent, AcpLaunch, ContentBlock, RecordActors, SessionUpdate},
+    records::{MemoryStore, RecordStore},
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -19,6 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         launch = launch.arg(argument);
     }
     let connection = AcpConnection::connect(launch).await?;
+    let store = MemoryStore::default();
 
     // The limit covers session setup, generation, and any stalled provider.
     // Dropping this scope retires unfinished work before connection shutdown.
@@ -31,7 +33,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vec![],
             )
             .await?;
-        let mut run = session.start_run(RunId::new("example-run")?, prompt)?;
+        let mut run = session.start_recorded_run(
+            RunId::new("example-run")?,
+            prompt,
+            &store,
+            RecordActors {
+                user: ActorId::new("user")?,
+                agent: ActorId::new("assistant")?,
+                host: ActorId::new("example-app")?,
+            },
+        )?;
         while let Some(event) = run.next().await? {
             match event {
                 AcpEvent::Update(SessionUpdate::AgentMessageChunk(chunk)) => {
@@ -41,6 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 AcpEvent::Permission { id, request } => {
+                    if !run.permission_pending(&id) {
+                        continue;
+                    }
                     eprintln!(
                         "\nDismissing permission request: {:?}",
                         request.tool_call.fields.title
@@ -57,5 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = connection.shutdown().await;
     outcome??;
     shutdown?;
+    let history = store.list(&SessionId::new("example-chat")?, None, 1000)?;
+    println!(
+        "{} portable records remain available after connection shutdown.",
+        history.len()
+    );
     Ok(())
 }

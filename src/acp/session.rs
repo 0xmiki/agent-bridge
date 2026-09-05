@@ -20,6 +20,7 @@ use tokio::{
 };
 
 use super::{AcpConnection, AcpError};
+use crate::records::{DecisionDelivery, PermissionOutcome};
 use crate::{ContextManifest, Run, RunEvent, RunId, RunSpec, RunStatus, SessionId, SlotId};
 
 const EVENT_CAPACITY: usize = 256;
@@ -39,6 +40,12 @@ pub enum AcpEvent {
     Permission {
         id: PermissionId,
         request: RequestPermissionRequest,
+    },
+    /// A local decision was submitted. Queued does not mean provider-acknowledged.
+    PermissionResolved {
+        id: PermissionId,
+        outcome: PermissionOutcome,
+        delivery: DecisionDelivery,
     },
     /// Execution stopped; inspect the reason before treating the task as successful.
     Finished(StopReason),
@@ -81,10 +88,28 @@ impl Route {
     }
 
     fn cancel_permissions(&mut self) {
-        for (_, pending) in self.pending.drain() {
-            let _ = pending.responder.respond(RequestPermissionResponse::new(
+        for (id, pending) in self.pending.drain() {
+            let result = pending.responder.respond(RequestPermissionResponse::new(
                 RequestPermissionOutcome::Cancelled,
             ));
+            if self.accepting
+                && self
+                    .sender
+                    .try_send(Delivery::Event(Box::new(AcpEvent::PermissionResolved {
+                        id,
+                        outcome: PermissionOutcome::Cancelled,
+                        delivery: if result.is_ok() {
+                            DecisionDelivery::Queued
+                        } else {
+                            DecisionDelivery::Unknown
+                        },
+                    })))
+                    .is_err()
+            {
+                self.overflow = true;
+                self.accepting = false;
+                let _ = self.fault.send(true);
+            }
         }
     }
 
@@ -148,7 +173,7 @@ pub(super) fn route_permission(
         ));
     };
     let mut route = route.lock().unwrap();
-    if !route.accepting || route.cancelling {
+    if !route.accepting {
         return responder.respond(RequestPermissionResponse::new(
             RequestPermissionOutcome::Cancelled,
         ));
@@ -181,7 +206,11 @@ pub(super) fn route_permission(
     route.deliver(Delivery::Event(Box::new(AcpEvent::Permission {
         id,
         request,
-    })))
+    })))?;
+    if route.cancelling {
+        route.cancel_permissions();
+    }
+    Ok(())
 }
 
 /// A new native ACP session associated with application-owned session and slot IDs.
@@ -259,6 +288,41 @@ impl AcpConnection {
 }
 
 impl<'connection> AcpSession<'connection> {
+    /// Register execution identity and input before dispatch, then record observed
+    /// events. This does not make external execution atomic with store writes.
+    pub fn start_recorded_run<'session, 'store, S: crate::records::RecordStore>(
+        &'session mut self,
+        id: RunId,
+        text: impl Into<String>,
+        store: &'store S,
+        actors: super::RecordActors,
+    ) -> Result<super::RecordedRun<'session, 'connection, 'store, S>, super::RecordingError> {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Err(AcpError::EmptyPrompt.into());
+        }
+        if self.retired {
+            return Err(AcpError::SessionUnavailable.into());
+        }
+        if self.connection.is_closed() {
+            return Err(AcpError::Closed.into());
+        }
+        let spec = RunSpec {
+            id: id.clone(),
+            session_id: self.session_id.clone(),
+            slot_id: self.slot_id.clone(),
+            context: ContextManifest::default(),
+            config: (),
+        };
+        let mut recorder = super::recording::Recorder::new(store, spec, &text, actors)?;
+        match self.start_run(id, text) {
+            Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
+            Err(error) => {
+                recorder.interrupt(error.to_string())?;
+                Err(error.into())
+            }
+        }
+    }
     /// Native initial session configuration, including any offered models or modes.
     pub fn info(&self) -> &NewSessionResponse {
         &self.info
@@ -318,6 +382,7 @@ impl<'connection> AcpSession<'connection> {
             ))
             .on_receiving_result(move |result| async move {
                 let mut route = completion_route.lock().unwrap();
+                route.cancel_permissions();
                 route.deliver(Delivery::Finished(result))?;
                 route.close();
                 Ok(())
@@ -373,7 +438,7 @@ impl AcpRun<'_, '_> {
         if self.settled {
             return Ok(None);
         }
-        loop {
+        {
             if self.route.lock().unwrap().overflow {
                 self.unknown();
                 return Err(AcpError::EventBufferFull);
@@ -389,15 +454,10 @@ impl AcpRun<'_, '_> {
             match delivery {
                 Some(Delivery::Event(event)) => {
                     let event = *event;
-                    if let AcpEvent::Permission { id, .. } = &event
-                        && !self.route.lock().unwrap().pending.contains_key(id)
-                    {
-                        continue;
-                    }
                     if self.run.status() == RunStatus::Starting {
                         self.run.apply(RunEvent::Started).unwrap();
                     }
-                    return Ok(Some(event));
+                    Ok(Some(event))
                 }
                 Some(Delivery::Finished(result)) => {
                     self.settled = true;
@@ -410,17 +470,17 @@ impl AcpRun<'_, '_> {
                                     RunEvent::Completed
                                 })
                                 .unwrap();
-                            return Ok(Some(AcpEvent::Finished(response.stop_reason)));
+                            Ok(Some(AcpEvent::Finished(response.stop_reason)))
                         }
                         Err(error) => {
                             self.run.apply(RunEvent::Failed).unwrap();
-                            return Err(AcpError::Protocol(error));
+                            Err(AcpError::Protocol(error))
                         }
                     }
                 }
                 None => {
                     self.unknown();
-                    return Err(AcpError::Closed);
+                    Err(AcpError::Closed)
                 }
             }
         }
@@ -443,10 +503,30 @@ impl AcpRun<'_, '_> {
             )),
             None => RequestPermissionOutcome::Cancelled,
         };
-        pending
+        let result = pending
             .responder
             .respond(RequestPermissionResponse::new(outcome))
-            .map_err(AcpError::Protocol)
+            .map_err(AcpError::Protocol);
+        route
+            .deliver(Delivery::Event(Box::new(AcpEvent::PermissionResolved {
+                id,
+                outcome: match option {
+                    Some(option) => PermissionOutcome::Selected(option.to_owned()),
+                    None => PermissionOutcome::Cancelled,
+                },
+                delivery: if result.is_ok() {
+                    DecisionDelivery::Queued
+                } else {
+                    DecisionDelivery::Unknown
+                },
+            })))
+            .map_err(|_| AcpError::EventBufferFull)?;
+        result
+    }
+
+    /// A streamed request can already have been resolved by cancellation or completion.
+    pub fn permission_pending(&self, id: &PermissionId) -> bool {
+        self.route.lock().unwrap().pending.contains_key(id)
     }
 
     pub fn cancel(&mut self) -> Result<(), AcpError> {

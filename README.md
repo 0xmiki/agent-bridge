@@ -12,8 +12,9 @@ Implemented so far: typed identifiers, slots and sessions, explicit context
 references, typed record envelopes, and an in-memory run lifecycle. The optional
 ACP adapter launches installed agents, creates sessions, streams text runs and tool
 activity, routes permission decisions, and handles cancellation. It can supply
-existing MCP server configuration when creating a session. Persistence, portable
-record conversion, grant policies, and cross-process continuation are still to come.
+existing MCP server configuration when creating a session. Recorded runs assemble
+portable transcripts through a local store, with an in-memory implementation.
+Disk persistence, grant policies, and cross-process continuation are still to come.
 
 ## Development
 
@@ -58,7 +59,12 @@ cargo run --features acp --example acp_chat -- /path/to/workspace \
 
 This example dismisses permission requests and has a 60-second timeout. Applications
 can present the offered options and respond explicitly through the run API.
+It also records the run in memory and reads its history after connection shutdown.
 
 The core has no runtime dependencies with default features. Enable `acp` to use
 the official ACP Rust SDK and Tokio. See [ACP connection notes](docs/acp.md) for
 the API, tested behavior, and current limits.
+
+Use the `records` feature independently for portable payloads and the local storage
+contract. See [records and storage](docs/records.md) for checkpoints, identity rules,
+and the distinction between local recording and durable execution.

@@ -12,6 +12,11 @@ use std::{
 
 use agent_bridge::acp::{AcpConnection, AcpError, AcpLaunch};
 use agent_bridge::acp::{AcpEvent, AcpRun, AcpSession};
+use agent_bridge::acp::{RecordActors, RecordedRun, RecordingError};
+use agent_bridge::records::{
+    MemoryStore, MessageKind, Payload, PermissionOutcome, RecordState, RecordStore, StoreError,
+};
+use agent_bridge::{ActorId, Content};
 use agent_bridge::{RunId, RunStatus, SessionId, SlotId};
 use agent_client_protocol::schema::v1::{
     ContentBlock, McpServer, McpServerHttp, McpServerStdio, SessionUpdate, StopReason,
@@ -724,5 +729,293 @@ async fn session_creation_errors_and_duplicate_ids_do_not_create_usable_handles(
         Err(AcpError::SessionUnavailable)
     ));
     drop(first);
+    connection.shutdown().await.unwrap();
+}
+
+fn actors() -> RecordActors {
+    RecordActors {
+        user: ActorId::new("person").unwrap(),
+        agent: ActorId::new("reviewer").unwrap(),
+        host: ActorId::new("app").unwrap(),
+    }
+}
+
+async fn recorded_next(run: &mut RecordedRun<'_, '_, '_, MemoryStore>) -> Option<AcpEvent> {
+    timeout(Duration::from_secs(3), run.next())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn recorded_text_has_stable_identity_without_a_write_per_delta() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_run(RunId::new("recorded").unwrap(), "Hello", &store, actors())
+            .unwrap();
+        assert!(matches!(
+            recorded_next(&mut run).await,
+            Some(AcpEvent::Update(_))
+        ));
+        let live = run.snapshot();
+        let message = live
+            .iter()
+            .find(|s| {
+                matches!(
+                    s.record.payload,
+                    Payload::Message {
+                        kind: MessageKind::Agent,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let id = message.record.id.clone();
+        assert!(
+            matches!(&message.record.payload, Payload::Message { message, .. } if message.content == vec![Content::Text("Hello ".into())])
+        );
+        let before = store.get(&id).unwrap();
+        assert_eq!(before.revision, 0);
+        assert!(
+            matches!(&before.record.payload, Payload::Message { message, .. } if message.content == vec![Content::Text(String::new())])
+        );
+        run.checkpoint().unwrap();
+        assert_eq!(store.get(&id).unwrap().revision, 1);
+        while recorded_next(&mut run).await.is_some() {}
+        let saved = store.get(&id).unwrap();
+        assert_eq!(saved.revision, 2);
+        assert_eq!(saved.state, RecordState::Complete);
+        assert_eq!(saved.record.actor.as_str(), "reviewer");
+        assert!(
+            matches!(&saved.record.payload, Payload::Message { message, .. } if message.content == vec![Content::Text("Hello world".into())])
+        );
+    }
+    connection.shutdown().await.unwrap();
+    let history = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    assert_eq!(history.len(), 3); // user, agent, stop reason
+    assert!(history.iter().all(|record| record.state.is_final()));
+    let run = store.get_run(&RunId::new("recorded").unwrap()).unwrap();
+    assert_eq!(run.slot_id.as_str(), "fixture-slot");
+    assert!(history.iter().any(|r| matches!(
+        r.record.payload,
+        Payload::RunFinished {
+            reason: agent_bridge::records::CompletionReason::Completed
+        }
+    )));
+}
+
+#[tokio::test]
+async fn automatic_permission_cancellation_is_recorded_with_its_request() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("permissions")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_run(
+                RunId::new("recorded-cancel").unwrap(),
+                "Read",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        let mut pending = 0;
+        while pending < 2 {
+            if let Some(AcpEvent::Permission { .. }) = recorded_next(&mut run).await {
+                pending += 1;
+            }
+        }
+        run.cancel().unwrap();
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+    let history = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    let responses: Vec<_> = history
+        .iter()
+        .filter(|s| matches!(s.record.payload, Payload::Decision { .. }))
+        .collect();
+    assert_eq!(responses.len(), 2);
+    for response in responses {
+        assert!(matches!(
+            &response.record.payload,
+            Payload::Decision {
+                outcome: PermissionOutcome::Cancelled,
+                ..
+            }
+        ));
+        assert_eq!(response.record.actor.as_str(), "app");
+        let request = store
+            .get(response.record.reply_to_id.as_ref().unwrap())
+            .unwrap();
+        assert!(matches!(request.record.payload, Payload::Permission { .. }));
+        assert_eq!(request.state, RecordState::Complete);
+    }
+}
+
+#[tokio::test]
+async fn recorded_permission_selection_and_tool_result_are_preserved() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("permission")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_run(
+                RunId::new("recorded-allow").unwrap(),
+                "Read",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while let Some(event) = recorded_next(&mut run).await {
+            if let AcpEvent::Permission { id, .. } = event {
+                // The request exists before the application can act on it.
+                assert!(
+                    store
+                        .list(&SessionId::new("app-session").unwrap(), None, 100)
+                        .unwrap()
+                        .iter()
+                        .any(|r| matches!(r.record.payload, Payload::Permission { .. }))
+                );
+                run.respond(id, Some("allow")).unwrap();
+            }
+        }
+    }
+    connection.shutdown().await.unwrap();
+    let history = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|s| matches!(s.record.payload, Payload::Tool(_)))
+            .count(),
+        1
+    );
+    assert!(history.iter().any(|s| matches!(&s.record.payload, Payload::Decision { outcome: PermissionOutcome::Selected(id), .. } if id == "allow")));
+}
+
+#[tokio::test]
+async fn abandoned_recording_checkpoints_partial_text_as_interrupted() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("cancel")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_run(
+                RunId::new("abandoned-recording").unwrap(),
+                "Hello",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        let _ = recorded_next(&mut run).await;
+    }
+    connection.shutdown().await.unwrap();
+    let history = store
+        .list(&SessionId::new("app-session").unwrap(), None, 100)
+        .unwrap();
+    let output = history
+        .iter()
+        .find(|s| {
+            matches!(
+                s.record.payload,
+                Payload::Message {
+                    kind: MessageKind::Agent,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert_eq!(output.state, RecordState::Interrupted);
+    assert!(
+        matches!(&output.record.payload, Payload::Message { message, .. } if message.content == vec![Content::Text("Hello ".into())])
+    );
+    assert!(
+        history
+            .iter()
+            .any(|s| matches!(s.record.payload, Payload::Failure { .. }))
+    );
+}
+
+#[tokio::test]
+async fn reused_execution_identity_is_rejected_before_another_prompt_is_sent() {
+    let files = TestFiles::new();
+    let log = files.path("messages");
+    let store = MemoryStore::default();
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        {
+            let mut run = session
+                .start_recorded_run(RunId::new("same").unwrap(), "Hello", &store, actors())
+                .unwrap();
+            while recorded_next(&mut run).await.is_some() {}
+        }
+        assert!(matches!(
+            session.start_recorded_run(RunId::new("same").unwrap(), "Hello", &store, actors()),
+            Err(RecordingError::RunAlreadyRecorded)
+        ));
+    }
+    connection.shutdown().await.unwrap();
+    let messages = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        messages
+            .lines()
+            .filter(|line| line.contains("session/prompt"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_conflicts_are_reported_and_stop_recording() {
+    let store = MemoryStore::default();
+    let connection = AcpConnection::connect(launch("cancel")).await.unwrap();
+    {
+        let mut session = new_session(&connection).await;
+        let mut run = session
+            .start_recorded_run(RunId::new("conflict").unwrap(), "Hello", &store, actors())
+            .unwrap();
+        let _ = recorded_next(&mut run).await;
+        let live = run.snapshot();
+        let original = live
+            .iter()
+            .find(|s| {
+                matches!(
+                    s.record.payload,
+                    Payload::Message {
+                        kind: MessageKind::Agent,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let mut other = original.record.payload.clone();
+        if let Payload::Message { message, .. } = &mut other {
+            message.content = vec![Content::Text("another writer".into())];
+        }
+        store
+            .checkpoint(&original.record.id, 0, other.clone(), RecordState::Open)
+            .unwrap();
+        assert!(matches!(
+            run.checkpoint(),
+            Err(RecordingError::Store(StoreError::RevisionConflict))
+        ));
+        assert_eq!(run.run().status(), RunStatus::Cancelling);
+        assert!(matches!(run.next().await, Err(RecordingError::Closed)));
+        assert_eq!(
+            store.get(&original.record.id).unwrap().record.payload,
+            other
+        );
+    }
     connection.shutdown().await.unwrap();
 }
