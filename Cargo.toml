@@ -11,6 +11,7 @@ structured = ["records", "dep:serde"]
 tools = ["records", "dep:serde", "dep:schemars", "dep:tokio", "dep:tokio-util"]
 questions = ["records", "dep:tokio", "dep:tokio-util"]
 mcp = ["tools", "dep:rmcp"]
+host = ["acp", "sqlite", "dep:tokio-util", "tokio/rt-multi-thread"]
 sqlite = ["records", "dep:rusqlite", "dep:serde", "dep:sha2"]
 acp = ["records", "dep:serde", "dep:agent-client-protocol", "dep:tokio", "dep:base64", "dep:sha2"]
 providers = ["acp", "tokio/process", "tokio/io-util"]
@@ -29,6 +30,11 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 
 [dev-dependencies]
 serde_json = "1"
+
+[[bin]]
+name = "agent-bridge-host"
+path = "host/main.rs"
+required-features = ["host"]
 
 [[example]]
 name = "acp_connect"

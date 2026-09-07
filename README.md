@@ -1,9 +1,11 @@
 # agent-bridge
 
-Shared integration for connecting applications to installed AI agents.
+Embed installed ACP agents with a typed application API, owned process lifecycle,
+reliable local history, and application tools.
 
-Early Rust library for a provider-independent execution model. The API is still
-being developed.
+Early Rust library with an experimental [Rust host and Bun client](host/README.md).
+The API is still being developed. The host is our integration test application;
+future features must prove their application-facing behavior there.
 
 Read the [milestones](milestone.md) for current status and the next implementation
 target. The [philosophy](philosophy.md), [working model](docs/model.md), and roadmap
@@ -15,8 +17,9 @@ ACP adapter launches installed agents, creates sessions, streams text runs and t
 activity, routes permission decisions, and handles cancellation. It can supply
 existing MCP server configuration when creating a session. Recorded runs assemble
 portable transcripts through memory or SQLite stores. Native ACP sessions can be
-handed off and resumed through single-use continuations. Grant policies, portable
-context restoration, and uncertain-outcome reconciliation are still to come.
+handed off and resumed through single-use continuations. Grant policies and portable
+context restoration are implemented in Rust. Restart reconciliation and exposing
+these features through the host remain on the roadmap.
 
 Model and option changes can be applied between runs. Requested selections and
 provider-reported settings are stored with each run; later configuration reports

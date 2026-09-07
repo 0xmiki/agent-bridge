@@ -1,0 +1,13 @@
+{
+  "name": "agent-bridge-host-lab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test client.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.1",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,25 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: cargo fmt --check
+      - run: cargo check --locked --no-default-features
+      - run: cargo test --locked --all-features --all-targets
+      - run: cargo clippy --locked --all-features --all-targets -- -D warnings
+      - run: cargo build --locked --features host --bin agent-bridge-host
+      - run: bun install --frozen-lockfile
+        working-directory: host
+      - run: bun run typecheck
+        working-directory: host
+      - run: bun test host/client.test.ts
