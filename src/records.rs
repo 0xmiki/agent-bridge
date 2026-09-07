@@ -200,6 +200,9 @@ pub struct Snapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
+    InvalidExecutionRelation,
+    ExecutionRelationConflict,
+    ExecutionCycle,
     MissingSession,
     MissingRun,
     MissingRecord,

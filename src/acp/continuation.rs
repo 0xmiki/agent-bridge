@@ -99,6 +99,7 @@ impl AcpConnection {
             cwd: data.cwd,
             predecessor: Some(id.clone()),
             quiescent: true,
+            fresh: false,
             configuration,
         })
     }

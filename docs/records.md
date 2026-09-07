@@ -2,7 +2,7 @@
 
 Working implementation. `MemoryStore` is process-local and loses its data when the
 application exits. The optional [SQLite adapter](sqlite.md) persists records across
-restarts. Its SQL schema is version 5; new JSON documents use version 2 and legacy
+restarts. Its SQL schema is version 6; new JSON documents use version 2 and legacy
 version 1 remains readable. Future format
 changes need explicit compatibility handling while the public API evolves.
 

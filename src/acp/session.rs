@@ -237,6 +237,7 @@ pub struct AcpSession<'connection> {
     pub(super) cwd: PathBuf,
     pub(super) predecessor: Option<crate::ContinuationId>,
     pub(super) quiescent: bool,
+    pub(super) fresh: bool,
     pub(super) configuration: Arc<Mutex<super::configuration::ConfigurationState>>,
 }
 
@@ -282,6 +283,7 @@ impl AcpConnection {
             cwd,
             predecessor: None,
             quiescent: true,
+            fresh: true,
             configuration,
         })
     }
@@ -308,6 +310,76 @@ impl AcpConnection {
 }
 
 impl<'connection> AcpSession<'connection> {
+    /// Start one bridge-managed child on a fresh native session. The caller binds
+    /// any application MCP server using plan.authority(); native tools are separate.
+    pub fn start_recorded_child_run<
+        'session,
+        'store,
+        S: crate::execution::ExecutionStore,
+        R: crate::context::ResourceStore,
+    >(
+        &'session mut self,
+        plan: &crate::execution::ChildPlan,
+        task: super::ContextTask<'_, R>,
+        store: &'store S,
+        actors: super::RecordActors,
+    ) -> Result<super::RecordedRun<'session, 'connection, 'store, S>, super::RecordingError> {
+        if !self.fresh || self.retired || !self.quiescent {
+            return Err(AcpError::SessionUnavailable.into());
+        }
+        if self.connection.is_closed() {
+            return Err(AcpError::Closed.into());
+        }
+        if task.prompt.trim().is_empty() {
+            return Err(AcpError::EmptyPrompt.into());
+        }
+        if actors.host != plan.authority().issuer || actors.agent != plan.authority().subject {
+            return Err(crate::records::StoreError::InvalidExecutionRelation.into());
+        }
+        let context = crate::context::prepare_with_policy(
+            task.manifest,
+            store,
+            task.resources,
+            std::slice::from_ref(&self.session_id),
+            task.limits,
+            &task.policy,
+        )?;
+        if context
+            .policy
+            .instruction_authorization
+            .as_ref()
+            .is_some_and(|authorization| authorization.grant.issuer != actors.host)
+        {
+            return Err(crate::context::ContextError::InstructionUnauthorized.into());
+        }
+        let mut spec = self.run_spec(plan.request().id.clone())?;
+        spec.context = context.manifest.clone();
+        let relation = plan.validate_run(store, &spec)?;
+        let (wire, blocks, receipt) = super::context::encode(
+            &context,
+            task.prompt,
+            task.max_prompt_bytes,
+            matches!(task.mode, super::ContextMode::AppendImagesToNative),
+            self.connection
+                .info
+                .agent_capabilities
+                .prompt_capabilities
+                .image,
+        )?;
+        let mut recorder =
+            super::recording::Recorder::new(store, spec.clone(), task.prompt, actors)?;
+        store.link_execution(relation)?;
+        recorder.prepare_input(receipt)?;
+        recorder.input_dispatch_attempted()?;
+        match self.dispatch_blocks(spec, wire, blocks) {
+            Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
+            Err(error) => {
+                recorder.interrupt(error.to_string())?;
+                Err(error.into())
+            }
+        }
+    }
+
     /// Resolve and append explicit context as user-level text. Unsupported inputs
     /// fail before registration; receipts precede dispatch and track observed evidence.
     pub fn start_recorded_context_run<
@@ -513,6 +585,7 @@ impl<'connection> AcpSession<'connection> {
         }
         let (sender, receiver) = mpsc::channel(EVENT_CAPACITY);
         self.quiescent = false;
+        self.fresh = false;
         let route = Arc::new(Mutex::new(Route {
             fault: self.connection.routes.lock().unwrap().fault.clone(),
             run_id: spec.id.clone(),

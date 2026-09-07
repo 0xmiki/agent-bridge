@@ -13,11 +13,102 @@ pub struct MemoryStore {
 
 #[derive(Default)]
 struct State {
+    execution_relations: HashMap<RunId, Arc<crate::execution::ExecutionRelation>>,
     continuations: continuation::Registry,
     sessions: HashMap<SessionId, Vec<RecordId>>,
     runs: HashMap<RunId, RunSpec>,
     records: HashMap<RecordId, Entry>,
     decisions: HashMap<RecordId, RecordId>,
+}
+
+impl crate::execution::ExecutionStore for MemoryStore {
+    fn link_execution(
+        &self,
+        relation: crate::execution::ExecutionRelation,
+    ) -> Result<Arc<crate::execution::ExecutionRelation>, StoreError> {
+        let mut state = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
+        if let Some(existing) = state.execution_relations.get(&relation.child) {
+            return if **existing == relation {
+                Ok(existing.clone())
+            } else {
+                Err(StoreError::ExecutionRelationConflict)
+            };
+        }
+        let parent = state
+            .runs
+            .get(&relation.parent)
+            .ok_or(StoreError::MissingRun)?;
+        let child = state
+            .runs
+            .get(&relation.child)
+            .ok_or(StoreError::MissingRun)?;
+        relation.validate(parent, child)?;
+        if state
+            .execution_relations
+            .get(&relation.parent)
+            .is_some_and(|edge| edge.child_authority != relation.parent_authority)
+            || state.execution_relations.values().any(|edge| {
+                edge.parent == relation.child && edge.parent_authority != relation.child_authority
+            })
+        {
+            return Err(StoreError::InvalidExecutionRelation);
+        }
+        for id in &child.context.records {
+            if state
+                .records
+                .get(id)
+                .ok_or(StoreError::MissingRecord)?
+                .current
+                .record
+                .session_id
+                != child.session_id
+            {
+                return Err(StoreError::WrongSession);
+            }
+        }
+        let mut ancestor = relation.parent.clone();
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            if ancestor == relation.child || !visited.insert(ancestor.clone()) {
+                return Err(StoreError::ExecutionCycle);
+            }
+            match state.execution_relations.get(&ancestor) {
+                Some(edge) => ancestor = edge.parent.clone(),
+                None => break,
+            }
+        }
+        let relation = Arc::new(relation);
+        state
+            .execution_relations
+            .insert(relation.child.clone(), relation.clone());
+        Ok(relation)
+    }
+    fn execution_parent(
+        &self,
+        child: &RunId,
+    ) -> Result<Option<Arc<crate::execution::ExecutionRelation>>, StoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .execution_relations
+            .get(child)
+            .cloned())
+    }
+    fn execution_children(
+        &self,
+        parent: &RunId,
+    ) -> Result<Vec<Arc<crate::execution::ExecutionRelation>>, StoreError> {
+        let state = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut children: Vec<_> = state
+            .execution_relations
+            .values()
+            .filter(|edge| &edge.parent == parent)
+            .cloned()
+            .collect();
+        children.sort_by(|a, b| a.child.as_str().cmp(b.child.as_str()));
+        Ok(children)
+    }
 }
 
 impl ContinuationStore for MemoryStore {

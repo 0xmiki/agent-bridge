@@ -32,7 +32,11 @@ pub mod questions;
 #[cfg(feature = "tools")]
 pub mod tools;
 
+mod authority;
 mod configuration;
+pub use authority::{ToolGrant, ToolRef, ToolScope};
+#[cfg(feature = "records")]
+pub mod execution;
 mod id;
 mod model;
 mod run;

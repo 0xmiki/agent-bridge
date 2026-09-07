@@ -44,6 +44,8 @@ Status reviewed September 7, 2026. M0's baseline is `10b9113`; M1 evidence is li
   providers passed a real call to the Rust application-tool server.
 - Structured application questions add seven tests, for 168 total. Schema 5 writes
   document format 2 and retains legacy format-1 reading.
+- Execution relationships add seven tests, for 175 total. Schema 6 retains parent
+  edges and authority snapshots; fresh-child checks passed with OpenCode and Codex.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -244,14 +246,20 @@ atomic answers, cancellation-aware waits, and a tool/host interaction example.
 Native ACP elicitation remains unadvertised and unmapped; this increment does not
 claim native question compatibility.
 
-Next slice: execution relationships and explicit child context/authority selection,
+The third increment adds [execution relationships](docs/execution-relations.md),
+explicit delegation grants, child-context selection, inherited tool-authority
+checks, and a fresh-session child dispatch path. Relationship writes precede child
+prompt dispatch. Native provider tools and internally spawned agents remain outside
+this application-tool authority boundary.
+
+Next slice: provider-managed subagent observations, with explicit limits on control;
 then concurrency/delegation limits and application-defined routing.
 
 - [x] Make existing MCP attachment convenient and verify real app-tool round trips.
 - [x] Add typed application-tool registration and the required MCP bridge.
 - [x] Separate tool declarations, execution grants, and user permission decisions.
 - [x] Preserve structured questions and answers alongside permission interactions.
-- [ ] Support execution relationships and explicit child context/authority selection.
+- [x] Support execution relationships and explicit child context/authority selection.
 - [ ] Represent provider-managed subagent activity without inventing unavailable control.
 - [ ] Enforce configured concurrency and delegation limits.
 - [ ] Demonstrate application-defined routing between participants and compute slots.

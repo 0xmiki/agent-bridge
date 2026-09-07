@@ -777,6 +777,190 @@ fn actors() -> RecordActors {
     }
 }
 
+#[tokio::test]
+async fn child_runs_require_fresh_sessions_and_persist_lineage_before_dispatch() {
+    use agent_bridge::execution::{ChildPlan, ChildRequest, DelegationGrant, ExecutionStore};
+    use agent_bridge::{ToolGrant, ToolScope};
+    let store = MemoryStore::default();
+    let resources = agent_bridge::context::MemoryResourceStore::default();
+    let connection = AcpConnection::connect(launch("chat")).await.unwrap();
+    let mut parent = new_session(&connection).await;
+    {
+        let mut run = parent
+            .start_recorded_run(
+                RunId::new("parent").unwrap(),
+                "parent context",
+                &store,
+                actors(),
+            )
+            .unwrap();
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    let parent_spec = store.get_run(&RunId::new("parent").unwrap()).unwrap();
+    let selected = store.list(&parent_spec.session_id, None, 100).unwrap()[0]
+        .record
+        .id
+        .clone();
+    let context = agent_bridge::ContextManifest {
+        records: vec![selected],
+        ..Default::default()
+    };
+    let authority = ToolGrant {
+        issuer: actors().host,
+        subject: actors().agent,
+        scope: ToolScope {
+            session: parent_spec.session_id.clone(),
+            slot: parent_spec.slot_id.clone(),
+        },
+        tools: vec![],
+    };
+    let plan = ChildPlan::new(
+        &store,
+        authority,
+        DelegationGrant {
+            issuer: actors().host,
+            subject: actors().agent,
+            parent: parent_spec.id,
+            context: context.clone(),
+            tools: vec![],
+        },
+        ChildRequest {
+            id: RunId::new("child").unwrap(),
+            slot: parent_spec.slot_id,
+            actor: ActorId::new("child-actor").unwrap(),
+            context: context.clone(),
+            tools: vec![],
+        },
+    )
+    .unwrap();
+    let child_actors = || RecordActors {
+        agent: ActorId::new("child-actor").unwrap(),
+        ..actors()
+    };
+    assert!(matches!(
+        parent.start_recorded_child_run(
+            &plan,
+            context_task(&context, &resources),
+            &store,
+            child_actors()
+        ),
+        Err(RecordingError::Agent(AcpError::SessionUnavailable))
+    ));
+    {
+        let mut child = new_session(&connection).await;
+        assert!(matches!(
+            child.start_recorded_child_run(
+                &plan,
+                context_task(&context, &resources),
+                &store,
+                actors()
+            ),
+            Err(RecordingError::Store(StoreError::InvalidExecutionRelation))
+        ));
+        let mut run = child
+            .start_recorded_child_run(
+                &plan,
+                context_task(&context, &resources),
+                &store,
+                child_actors(),
+            )
+            .unwrap();
+        assert_eq!(run.run().spec().context, context);
+        assert_eq!(
+            store
+                .execution_parent(&plan.request().id)
+                .unwrap()
+                .unwrap()
+                .parent
+                .as_str(),
+            "parent"
+        );
+        while recorded_next(&mut run).await.is_some() {}
+    }
+    connection.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn child_relation_write_failure_does_not_dispatch() {
+    use agent_bridge::execution::{ChildPlan, ChildRequest, DelegationGrant, ExecutionStore};
+    use agent_bridge::{ToolGrant, ToolScope};
+    let files = TestFiles::new();
+    let path = files.path("child.sqlite3");
+    let log = files.path("messages");
+    let store = agent_bridge::records::SqliteStore::open(&path).unwrap();
+    let parent = agent_bridge::RunSpec {
+        id: RunId::new("parent").unwrap(),
+        session_id: SessionId::new("app-session").unwrap(),
+        slot_id: SlotId::new("parent-slot").unwrap(),
+        context: Default::default(),
+        config: Default::default(),
+        continuation: None,
+    };
+    store.create_session(parent.session_id.clone()).unwrap();
+    store.register_run(parent.clone()).unwrap();
+    let plan = ChildPlan::new(
+        &store,
+        ToolGrant {
+            issuer: actors().host,
+            subject: actors().agent,
+            scope: ToolScope {
+                session: parent.session_id,
+                slot: parent.slot_id,
+            },
+            tools: vec![],
+        },
+        DelegationGrant {
+            issuer: actors().host,
+            subject: actors().agent,
+            parent: parent.id,
+            context: Default::default(),
+            tools: vec![],
+        },
+        ChildRequest {
+            id: RunId::new("child").unwrap(),
+            slot: SlotId::new("fixture-slot").unwrap(),
+            actor: actors().agent,
+            context: Default::default(),
+            tools: vec![],
+        },
+    )
+    .unwrap();
+    let sql = rusqlite::Connection::open(path).unwrap();
+    sql.execute_batch("CREATE TRIGGER fail_edge BEFORE INSERT ON agent_bridge_execution_relations BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+    let connection =
+        AcpConnection::connect(launch("chat").env("BRIDGE_TEST_MESSAGES", log.to_string_lossy()))
+            .await
+            .unwrap();
+    {
+        let mut child = new_session(&connection).await;
+        let resources = agent_bridge::context::MemoryResourceStore::default();
+        let manifest = agent_bridge::ContextManifest::default();
+        assert!(matches!(
+            child.start_recorded_child_run(
+                &plan,
+                context_task(&manifest, &resources),
+                &store,
+                actors()
+            ),
+            Err(RecordingError::Store(_))
+        ));
+        assert!(
+            store
+                .execution_parent(&plan.request().id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.get_run(&plan.request().id).is_ok());
+    }
+    connection.shutdown().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("session/prompt")
+    );
+}
+
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn skill_receipts_distinguish_text_delivery_from_native_activation() {

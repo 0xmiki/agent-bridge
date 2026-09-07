@@ -1,28 +1,12 @@
 //! Typed application operations with host-owned, revision-specific grants.
-use crate::{ActorId, SessionId, SlotId};
+use crate::ActorId;
+pub use crate::{ToolGrant, ToolRef, ToolScope};
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeMap, error::Error, fmt, future::Future, pin::Pin, sync::Arc};
 pub use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolRef {
-    pub name: String,
-    pub revision: String,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolScope {
-    pub session: SessionId,
-    pub slot: SlotId,
-}
-#[derive(Debug, Clone)]
-pub struct ToolGrant {
-    pub issuer: ActorId,
-    pub subject: ActorId,
-    pub scope: ToolScope,
-    pub tools: Vec<ToolRef>,
-}
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
     pub reference: ToolRef,

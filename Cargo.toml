@@ -81,3 +81,7 @@ required-features = ["acp", "mcp"]
 [[example]]
 name = "application_questions"
 required-features = ["tools", "questions", "sqlite"]
+
+[[example]]
+name = "acp_child"
+required-features = ["acp", "sqlite"]

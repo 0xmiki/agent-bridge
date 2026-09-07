@@ -26,7 +26,7 @@ Clones share one connection; separate handles can open the same file. Operations
 are synchronous and may wait up to five seconds for a write lock, so keep them off
 UI threads and account for blocking in async hosts. Lock contention returns `Busy`.
 
-## Schema version 5
+## Schema version 6
 
 | Table | Responsibility |
 | --- | --- |
@@ -38,6 +38,7 @@ UI threads and account for blocking in async hosts. Lock contention returns `Bus
 | `agent_bridge_continuations` | Single-use provider handoffs and successor chains |
 | `agent_bridge_resource_versions` | Immutable resource ID/revision, media type, and blob digest |
 | `agent_bridge_resource_blobs` | One binary blob per SHA-256 digest |
+| `agent_bridge_execution_relations` | Immutable parent/child run edges and authority snapshots |
 
 Version 1 adds records in
 [0001_records.sql](../src/records/sqlite/migrations/0001_records.sql). Version 2 adds
@@ -52,6 +53,8 @@ Version 4 adds immutable resource storage in
 Version 5 gates [question/answer payloads](questions.md) and JSON document format 2.
 It needs no new tables and does not rewrite existing format-1 rows. The decoder
 supports formats 1 and 2; older writers reject the schema-5 marker on open.
+Version 6 adds [execution relationships](execution-relations.md) without changing
+existing record documents. Older writers reject the newer schema marker.
 Slots remain
 host configuration; this record store persists their references, not executables,
 or credentials. Run rows now preserve configuration reports independently of slot
@@ -124,7 +127,7 @@ corruption, rollback after an injected SQL failure, and independent-connection r
 ACP fixture runs also read transcripts and resume a saved continuation after SQLite
 reopens.
 
-The public API can keep improving, but SQL schema versions 1 through 5 and JSON formats 1/2
+The public API can keep improving, but SQL schema versions 1 through 6 and JSON formats 1/2
 are now compatibility obligations. New schema steps belong in migrations. New JSON
 formats need an explicit upgrade or a retained old-version decoder. Async access,
 configurable lock timeouts,

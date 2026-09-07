@@ -55,6 +55,7 @@ use tools.` All three use the same `providers` example and `AcpDriver`.
 | Typed JSON background task with host validation | Passed | Passed | Deferred |
 | Versioned skill-text fallback | Passed September 6 | Passed September 6 | Deferred |
 | Rust application tool via grant-bound MCP server | Passed September 6 | Passed September 6 | Deferred |
+| Application-managed child with selected context and retained lineage | Passed September 7 | Passed September 7 | Deferred |
 
 Codex used local codex-cli 0.153.4 via the explicit override. Claude used the
 adapter's Claude Agent SDK 0.3.257. Claude returned ACP's structured authentication

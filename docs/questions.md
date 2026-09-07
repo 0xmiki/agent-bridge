@@ -92,10 +92,10 @@ host/client UI transport remains M6 work.
 
 ## Format compatibility and verification
 
-SQLite schema version 5 gates support for the new payloads. New JSON documents use
+SQLite schema version 5 introduced the gate for these payloads. New JSON documents use
 format version 2; the decoder retains format-1 support and rejects newer unknown
 versions. Migration preserves existing rows without rewriting their documents.
-Older libraries reject schema 5 instead of writing to a database containing types
+Pre-question libraries reject the newer schema instead of writing to a database containing types
 they cannot interpret. See [SQLite storage](sqlite.md).
 
 Tests cover field validation, wrong response kinds, atomic/idempotent resolution,

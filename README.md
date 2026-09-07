@@ -40,6 +40,8 @@ without equating document delivery with native activation.
 session/slot grants, and a host-bound MCP server.
 [Structured questions](docs/questions.md) add validated, atomic answers and a local
 awaitable handle for application-managed interactions.
+[Execution relationships](docs/execution-relations.md) record bridge-managed children
+with explicitly selected context and narrowed application-tool authority.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared
