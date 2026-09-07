@@ -89,3 +89,26 @@ app-server API after validating their workspace and first test prompt.
 The fixture suite covers successful provider cleanup with bridge records retained,
 and cleanup rejection causing a nonzero host exit. These checks do not establish
 cleanup after abrupt host death or failure before the adapter returns a session ID.
+
+## Shared-database readers, September 8
+
+180 Rust tests, seventeen host tests with 290 assertions, Clippy, rustfmt,
+default-feature-free compilation, and TypeScript checking passed locally.
+This increment used deterministic fixtures and did not create provider-history threads.
+
+A new regression test first failed against the previous host: reading history under
+an external reserved writer lock returned `Busy` because opening a reader also ran a
+migration transaction. Host read endpoints now open an existing current-schema database
+read-only. They read committed state under a reserved lock; an exclusive lock fails a
+refresh without advancing its checkpoint, and ping still responds within the deadline.
+
+Two integration cases run three sessions sharing a database while independent
+projections refresh. They verify distinct session output, terminal outcomes, exact
+history and restored projections, and preservation of the application's DELETE or
+WAL journal mode. Rust tests verify read-only connections reject mutations, never
+create missing databases or migrate older schemas, and see committed updates from
+independent writers.
+
+This policy bounds SQLite lock waits and reports failures. It does not establish
+arbitrary disk-stall isolation, independent slow subscribers, or writer fairness
+under sustained load. No provider-specific behavior changed in this increment.

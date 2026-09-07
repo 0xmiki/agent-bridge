@@ -332,3 +332,84 @@ test("provider cleanup failure makes close fail instead of claiming success", as
   await host.createSession({ ...options("cleanup-error", "host-delete-error"), delete_session_on_close: true });
   await expect(host.close()).rejects.toThrow("host exited (1)");
 }, 15000);
+
+test("history and state readers do not contend for an external writer's reserved lock", async () => {
+  const host = new BridgeHost(binary);
+  const config = options("reader-lock");
+  let lock: Database | undefined;
+  try {
+    const session = await host.createSession(config);
+    await text(session.run("saved"));
+    const expected = (await session.history()).records;
+    const state = new SessionState(config.database, session.id);
+    await state.sync(host);
+    lock = new Database(config.database); lock.exec("BEGIN IMMEDIATE");
+    // Reserved write locks permit reads of committed state in SQLite's default journal mode.
+    expect((await within(session.history())).records).toEqual(expected);
+    expect((await within(session.snapshot())).records).toEqual(expected);
+    await within(state.sync(host));
+    expect(state.items.map(item => item.record)).toEqual(expected);
+    expect(await within(host.request("ping"))).toEqual({ alive: true });
+    lock.exec("ROLLBACK");
+    const checkpoint = state.checkpoint();
+    lock.exec("BEGIN EXCLUSIVE");
+    await expect(within(state.sync(host))).rejects.toHaveProperty("code", "history_failed");
+    expect(state.checkpoint()).toEqual(checkpoint);
+    expect(await within(host.request("ping"))).toEqual({ alive: true });
+    lock.exec("ROLLBACK"); lock.close(); lock = undefined;
+    await state.sync(host);
+    expect(state.checkpoint()).toEqual(checkpoint);
+  } finally {
+    if (lock) { lock.exec("ROLLBACK"); lock.close(); }
+    await host.close();
+  }
+}, 15000);
+
+for (const journal of ["DELETE", "WAL"] as const) {
+  test(`three sessions share ${journal} storage while independent projections refresh`, async () => {
+    const host = new BridgeHost(binary);
+    const database = join(directory, `shared-${journal}.sqlite3`);
+    const sql = new Database(database, {create:true});
+    expect((sql.query(`PRAGMA journal_mode=${journal}`).get() as {journal_mode:string}).journal_mode).toBe(journal.toLowerCase());
+    sql.close();
+    const gates = [0, 1, 2].map(i => join(directory, `shared-${journal}-${i}`));
+    const checkpoints: {id:string; saved:NonNullable<ReturnType<SessionState["checkpoint"]>>; expected:StoredRecord[]}[] = [];
+    try {
+      const sessions = await Promise.all(gates.map((gate, i) => host.createSession({...options(`shared-${journal}-${i}`, "host-state", {BRIDGE_TEST_GATE:gate}), database})));
+      const states = sessions.map(session => new SessionState(database, session.id));
+      for (let turn = 0; turn < 2; turn++) {
+        const runs = sessions.map((session, i) => session.run(turn === 0 ? `shared-${i}` : "recall"));
+        const results = runs.map(run => collect(run));
+        for (let chunk = 0; chunk < 2; chunk++) {
+          await until(() => gates.every(gate => existsSync(`${gate}.ready-${turn}-${chunk}`)));
+          gates.forEach(gate => writeFileSync(`${gate}.go-${turn}-${chunk}`, "go"));
+          await within(Promise.all(states.map(state => state.sync(host, 2))));
+        }
+        const events = await Promise.all(results);
+        for (let i = 0; i < sessions.length; i++) {
+          expect(events[i]!.filter(event => event.event === "text_delta").map(event => event.event === "text_delta" && event.text).join("")).toBe(`shared-${i}:${turn === 0 ? "first" : "recall"}`);
+          expect((await runs[i]!.completed).status).toBe("completed");
+          expect((await runs[i]!.completed).recording_error).toBeNull();
+        }
+      }
+      await Promise.all(states.map(state => state.sync(host, 2)));
+      for (let i = 0; i < sessions.length; i++) {
+        const expected = (await sessions[i]!.history()).records;
+        expect(states[i]!.items.map(item => item.record)).toEqual(expected);
+        expect(new Set(expected.map(record => record.id)).size).toBe(expected.length);
+        checkpoints.push({id:sessions[i]!.id, saved:states[i]!.checkpoint()!, expected});
+      }
+    } finally { await host.close(); }
+    const reopened = new BridgeHost(binary);
+    try {
+      for (const {id, saved, expected} of checkpoints) {
+        const state = new SessionState(database, id, saved);
+        await state.sync(reopened, 2);
+        expect(state.items.map(item => item.record)).toEqual(expected);
+      }
+    } finally { await reopened.close(); }
+    const check = new Database(database, {readonly:true});
+    expect((check.query("PRAGMA journal_mode").get() as {journal_mode:string}).journal_mode).toBe(journal.toLowerCase());
+    check.close();
+  }, 30000);
+}

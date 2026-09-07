@@ -13,6 +13,11 @@ of every streamed transcript revision. Multiple updates may coalesce into one up
 This feed describes current state; it is not an event log for executing effects.
 There are no record deletes or tombstones in the current storage API.
 
+Host read requests open current-schema databases read-only. They do not migrate or
+compete for a reserved write lock. An exclusive database lock can still fail a refresh;
+the client keeps its last committed projection/cursor and may retry that read later.
+Initialize older databases through a writable owner before synchronizing them.
+
 A cursor contains a database epoch, session ID, and position. Host positions use
 decimal strings. Treat cursors as values and persist them with the corresponding
 projection. Foreign databases/sessions and future positions are rejected. Restoring

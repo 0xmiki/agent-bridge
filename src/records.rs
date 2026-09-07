@@ -216,6 +216,8 @@ pub enum StoreError {
     OpenContextRecord,
     InvalidPageSize,
     InvalidChangeCursor,
+    ReadOnly,
+    SchemaMigrationRequired { found: i64, expected: i64 },
     SequenceExhausted,
     Poisoned,
     Busy,

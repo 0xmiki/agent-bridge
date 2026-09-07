@@ -53,8 +53,15 @@ On Unix, output uses nonblocking writes with a one-second frame deadline. Tests 
 a stalled reader with stdin kept open, disconnect, and EOF under output pressure.
 Output failure stops the entire owned host and exits nonzero. This establishes a
 bounded failure path, not per-subscriber isolation or lossless backpressure. Arbitrary
-disk stalls, shared-database contention policy, and richer cancellation guarantees
-remain open.
+disk stalls and richer cancellation guarantees remain open.
+
+Shared-database tests now exercise three sessions, interleaved output, simultaneous
+projection refreshes, and exact state after reconnect in DELETE and WAL modes.
+Host readers use read-only connections and do not take migration write locks.
+An external reserved writer lock permits reads of committed state; an exclusive
+lock fails a refresh within the deadline, preserving the previous client checkpoint
+and host responsiveness. The explicit policy is bounded lock waits and reported
+failure, without automatic run retries or a sustained-load fairness claim.
 
 ## 4. Application interactions
 

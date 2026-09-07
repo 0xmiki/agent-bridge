@@ -90,6 +90,13 @@ the failure itself. Applications must not infer completion from missing records.
 The default Rust store still waits five seconds; callers can choose
 `SqliteStore::open_with_busy_timeout`. These budgets do not bound disk I/O or mutex waits.
 
+`history`, `snapshot`, and `changes` use separate read-only connections and require
+an existing, current-schema database. They neither create nor migrate a database.
+Reserved writer locks permit reading committed state; exclusive locks may produce
+`history_failed` without advancing client state or stopping the host. Three sessions
+sharing one database with independent state readers are tested in both DELETE and
+WAL journal modes. Applications choose the journal mode; the host does not change it.
+
 Unix stdout writes are nonblocking with a one-second frame deadline. A disconnected
 or stalled consumer causes host shutdown and nonzero exit; queued output may be lost.
 Linux tests check host, provider, and descendant exit within five seconds, including

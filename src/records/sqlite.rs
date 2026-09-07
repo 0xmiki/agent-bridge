@@ -6,7 +6,7 @@ mod resources;
 
 use super::*;
 use crate::{ContextManifest, InvalidId, SlotId};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
@@ -36,6 +36,42 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// Read an existing, current-schema database without creating or migrating it.
+    /// The SQLite connection rejects all mutations. Readers do not acquire a
+    /// reserved write lock just to open; exclusive locks can still return Busy.
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        busy_timeout: Duration,
+    ) -> Result<Self, StoreError> {
+        let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(database_error)?;
+        connection
+            .busy_timeout(busy_timeout)
+            .map_err(database_error)?;
+        let tx = connection.transaction().map_err(database_error)?;
+        let version: i64 = tx
+            .query_row(
+                "SELECT version FROM agent_bridge_schema WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(database_error)?;
+        if version > MIGRATIONS.len() as i64 || version <= 0 {
+            return Err(StoreError::UnsupportedSchemaVersion(version));
+        }
+        if version != MIGRATIONS.len() as i64 {
+            return Err(StoreError::SchemaMigrationRequired {
+                found: version,
+                expected: MIGRATIONS.len() as i64,
+            });
+        }
+        validate_schema(&tx)?;
+        tx.commit().map_err(database_error)?;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+        })
+    }
+
     /// Create or open an application database. Its parent directory must exist.
     /// Only the reserved `agent_bridge_*` tables are migrated; application tables
     /// and the database-wide `user_version` and journal mode are left alone.
@@ -95,6 +131,9 @@ impl SqliteStore {
 }
 
 fn database_error(error: rusqlite::Error) -> StoreError {
+    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly) {
+        return StoreError::ReadOnly;
+    }
     if matches!(
         error.sqlite_error_code(),
         Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
@@ -147,6 +186,11 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             )
             .map_err(database_error)?;
     }
+    validate_schema(&transaction)?;
+    transaction.commit().map_err(database_error)
+}
+
+fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
     // Validate the expected table/column surface even when no migration was needed.
     for query in [
         "SELECT id, next_sequence FROM agent_bridge_sessions LIMIT 0",
@@ -156,15 +200,17 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         "SELECT child_id, parent_id, relation_json FROM agent_bridge_execution_relations LIMIT 0",
         "SELECT resource_id, revision, media_type, sha256 FROM agent_bridge_resource_versions LIMIT 0",
         "SELECT id, session_id, adapter, scope, native_key, predecessor_id, descriptor_json, state, latest FROM agent_bridge_continuations LIMIT 0",
+        "SELECT id, epoch, position FROM agent_bridge_change_clock LIMIT 0",
+        "SELECT record_id, session_id, position FROM agent_bridge_record_changes LIMIT 0",
     ] {
-        transaction.prepare(query).map_err(database_error)?;
+        connection.prepare(query).map_err(database_error)?;
     }
-    transaction
+    connection
         .prepare(&format!(
             "SELECT {RECORD_COLUMNS} FROM agent_bridge_records LIMIT 0"
         ))
         .map_err(database_error)?;
-    transaction.commit().map_err(database_error)
+    Ok(())
 }
 
 fn state_name(state: RecordState) -> &'static str {

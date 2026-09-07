@@ -32,10 +32,14 @@ objects in application code. Acceptance: [quality gates 1–3](docs/quality-gate
 - [x] Explicit SQLite lock failure, independent-database session progress, and no automatic retry.
 - [x] SQLite snapshot/change cursors, old-record updates, and initial typed client projections.
 - [ ] Extend typed readers to bridge-owned receipts and settle the public projection API.
-- [ ] Arbitrary storage stalls, shared-database contention policy, and independent subscriber isolation.
+- [x] Shared-database contention policy: separate read-only queries, DELETE/WAL concurrency tests, bounded explicit lock failures.
+- [ ] Arbitrary storage stalls and independent subscriber isolation.
 - [ ] Document equivalent Rust usage and the settled error/ownership contract.
 
-Next slice: shared-database contention policy and remaining runtime isolation tests.
+Next slice: remaining runtime isolation, especially storage operations that do not
+return within a SQLite busy timeout. Shared-database reads now avoid migration write
+locks; three concurrent sessions and readers pass DELETE/WAL tests. This does not
+establish disk-stall isolation or writer fairness under sustained load.
 The first [state synchronization contract](docs/state-sync.md) is implemented with
 coalesced record changes rather than a transcript-revision log. Fault tests exposed and
 fixed unbounded stdout writes, long lock waits, and colliding permission tokens. The

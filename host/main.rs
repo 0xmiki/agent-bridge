@@ -101,10 +101,8 @@ fn snapshot(value: &Snapshot) -> Value {
         "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload})
 }
 fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
-    let store = SqliteStore::open_with_busy_timeout(
-        string(&request.params, "database")?,
-        STORAGE_LOCK_WAIT,
-    )?;
+    let store =
+        SqliteStore::open_read_only(string(&request.params, "database")?, STORAGE_LOCK_WAIT)?;
     let session = SessionId::new(string(&request.params, "session_id")?)?;
     if request.method == "snapshot" || request.method == "changes" {
         let cursor = request

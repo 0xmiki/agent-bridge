@@ -868,3 +868,91 @@ fn change_index_backfills_v6_and_rolls_back_with_record_updates() {
         .unwrap();
     assert_eq!(store.changes(&cursor, 100).unwrap().records.len(), 1);
 }
+
+#[test]
+fn read_only_connections_read_committed_state_without_mutating_the_database() {
+    let database = Database::new();
+    let writer = database.open();
+    ready(&writer);
+    let record = writer
+        .insert(draft("saved", message("committed"), RecordState::Open))
+        .unwrap();
+    let reader =
+        SqliteStore::open_read_only(database.path(), std::time::Duration::from_millis(100))
+            .unwrap();
+    let cursor = reader
+        .snapshot_page(&SessionId::new("s").unwrap(), None, None, 10)
+        .unwrap()
+        .cursor;
+    assert_eq!(
+        reader
+            .insert(draft("rejected", message("no"), RecordState::Complete))
+            .unwrap_err(),
+        StoreError::ReadOnly
+    );
+    assert_eq!(
+        reader
+            .checkpoint(&record.record.id, 0, message("no"), RecordState::Complete)
+            .unwrap_err(),
+        StoreError::ReadOnly
+    );
+    assert_eq!(
+        reader
+            .create_session(SessionId::new("rejected").unwrap())
+            .unwrap_err(),
+        StoreError::ReadOnly
+    );
+    assert_eq!(reader.changes(&cursor, 10).unwrap().cursor, cursor);
+    let sql = Connection::open(database.path()).unwrap();
+    sql.execute_batch("BEGIN IMMEDIATE; UPDATE agent_bridge_records SET revision = revision + 1 WHERE id = 'saved';").unwrap();
+    let fresh = SqliteStore::open_read_only(database.path(), std::time::Duration::from_millis(100))
+        .unwrap();
+    assert_eq!(fresh.get(&record.record.id).unwrap(), record);
+    assert!(fresh.changes(&cursor, 10).unwrap().records.is_empty());
+    sql.execute_batch("ROLLBACK").unwrap();
+    let completed = writer
+        .checkpoint(&record.record.id, 0, message("done"), RecordState::Complete)
+        .unwrap();
+    assert_eq!(
+        reader.changes(&cursor, 10).unwrap().records,
+        vec![completed]
+    );
+}
+
+#[test]
+fn read_only_open_neither_creates_missing_databases_nor_migrates_old_schemas() {
+    let database = Database::new();
+    assert!(SqliteStore::open_read_only(database.path(), std::time::Duration::ZERO).is_err());
+    assert!(!database.path().exists());
+    let store = database.open();
+    ready(&store);
+    let record = store
+        .insert(draft("saved", message("kept"), RecordState::Complete))
+        .unwrap();
+    drop(store);
+    let sql = Connection::open(database.path()).unwrap();
+    sql.execute_batch("DROP TRIGGER agent_bridge_record_insert_change; DROP TRIGGER agent_bridge_record_update_change; DROP TABLE agent_bridge_record_changes; DROP TABLE agent_bridge_change_clock; UPDATE agent_bridge_schema SET version = 6;").unwrap();
+    assert!(matches!(
+        SqliteStore::open_read_only(database.path(), std::time::Duration::ZERO),
+        Err(StoreError::SchemaMigrationRequired {
+            found: 6,
+            expected: 7
+        })
+    ));
+    assert_eq!(
+        sql.query_row("SELECT version FROM agent_bridge_schema", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    drop(database.open());
+    let reader = SqliteStore::open_read_only(database.path(), std::time::Duration::ZERO).unwrap();
+    assert_eq!(reader.get(&record.record.id).unwrap(), record);
+    drop(reader);
+    sql.execute("UPDATE agent_bridge_schema SET version = 99", [])
+        .unwrap();
+    assert!(matches!(
+        SqliteStore::open_read_only(database.path(), std::time::Duration::ZERO),
+        Err(StoreError::UnsupportedSchemaVersion(99))
+    ));
+}

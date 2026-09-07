@@ -30,6 +30,20 @@ choose a shorter wait, including during migrations. This bounds SQLite busy-hand
 waits per operation, not filesystem I/O or mutex waits. The experimental host uses
 100 ms and reports recording failure explicitly; it does not retry uncertain runs.
 
+Use `SqliteStore::open_read_only(path, busy_timeout)` for history and change readers.
+It opens only an existing schema-7 database, without migrating or taking a reserved
+write lock. Mutations fail with `ReadOnly`. Older supported schemas return
+`SchemaMigrationRequired`; initialize them through a writable owner first. Missing
+databases are not created and newer schemas are rejected.
+
+The host uses this read-only path for `history`, `snapshot`, and `changes`. Each
+session retains its own writable connection; each read request has a separate
+read-only connection. Applications own journal-mode selection. Concurrent session
+and projection tests cover both SQLite's DELETE mode and WAL, with no mode changes
+made by the bridge. The 100 ms lock budget still applies: an exclusive lock can
+fail reads, and prolonged writer contention can fail recording. There is no automatic
+run retry or guarantee of writer fairness under sustained contention.
+
 ## Schema version 7
 
 | Table | Responsibility |
