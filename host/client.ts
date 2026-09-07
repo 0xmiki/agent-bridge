@@ -1,9 +1,11 @@
 /** Experimental v1 client. No ACP SDK objects cross this boundary. */
 import { spawn } from "bun";
 
-export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string> }
+export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean }
 export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown } }
 export interface HistoryPage { records: StoredRecord[]; next_after: string | null; page_full: boolean }
+export interface ChangeCursor { epoch: string; session_id: string; position: string }
+export interface StatePage extends HistoryPage { cursor: ChangeCursor }
 function startHost(binary: string) { return spawn([binary], { stdin: "pipe", stdout: "pipe", stderr: "inherit" }); }
 export type RunEvent =
   | { event: "text_delta"; session_id: string; run_id: string; text: string }
@@ -51,6 +53,8 @@ export class HostSession {
   constructor(private host: BridgeHost, readonly id: string, readonly slotId: string, readonly database: string) {}
   run(prompt: string) { return this.host.startRun(this.id, prompt); }
   history(after?: string, limit = 1000) { return this.host.history(this.database, this.id, after, limit); }
+  snapshot(cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.host.snapshot(this.database, this.id, cursor, after, limit); }
+  changes(cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.host.changes(this.database, this.id, cursor, limit); }
 }
 
 export class BridgeHost {
@@ -113,5 +117,7 @@ export class BridgeHost {
     return run;
   }
   history(database: string, sessionId: string, after?: string, limit = 1000): Promise<HistoryPage> { return this.request("history", { database, session_id: sessionId, after, limit }); }
+  snapshot(database: string, sessionId: string, cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.request("snapshot", { database, session_id: sessionId, cursor, after, limit }); }
+  changes(database: string, sessionId: string, cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.request("changes", { database, session_id: sessionId, cursor, limit }); }
   async close() { if (!this.closing && !this.error) { this.closing = true; await this.request("shutdown"); } this.process.stdin.end(); const code = await this.process.exited; if (code !== 0) throw new Error(`host exited (${code})`); }
 }

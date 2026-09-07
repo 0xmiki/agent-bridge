@@ -30,7 +30,7 @@ choose a shorter wait, including during migrations. This bounds SQLite busy-hand
 waits per operation, not filesystem I/O or mutex waits. The experimental host uses
 100 ms and reports recording failure explicitly; it does not retry uncertain runs.
 
-## Schema version 6
+## Schema version 7
 
 | Table | Responsibility |
 | --- | --- |
@@ -43,6 +43,11 @@ waits per operation, not filesystem I/O or mutex waits. The experimental host us
 | `agent_bridge_resource_versions` | Immutable resource ID/revision, media type, and blob digest |
 | `agent_bridge_resource_blobs` | One binary blob per SHA-256 digest |
 | `agent_bridge_execution_relations` | Immutable parent/child run edges and authority snapshots |
+| `agent_bridge_change_clock` | Database epoch and transactional change position |
+| `agent_bridge_record_changes` | Latest change position per record, indexed by session |
+
+Version 7 adds the coalesced [state synchronization](state-sync.md) index and backfills
+existing records. It retains document format 2 and does not copy old transcript revisions.
 
 Version 1 adds records in
 [0001_records.sql](../src/records/sqlite/migrations/0001_records.sql). Version 2 adds

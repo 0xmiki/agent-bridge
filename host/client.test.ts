@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BridgeHost, type HostRun, type RunEvent, type StoredRecord } from "./client";
+import { SessionState } from "./state";
 
 const root = resolve(import.meta.dir, "..");
 const binary = process.env.AGENT_BRIDGE_HOST ?? join(root, "target/debug/agent-bridge-host");
@@ -267,3 +268,67 @@ test("wire versions and malformed requests fail clearly without launching a prov
   expect(frames.find(frame => frame.id === "ping")?.result.alive).toBe(true);
   expect(await host.exited).toBe(0);
 }, 10000);
+
+test("state projection catches old-record updates and resumes from a saved checkpoint", async () => {
+  const host = new BridgeHost(binary);
+  const gate = join(directory, "state-gate");
+  const config = options("state", "host-state", { BRIDGE_TEST_GATE: gate });
+  let saved: ReturnType<SessionState["checkpoint"]>;
+  let expected: StoredRecord[] = []; let id = "";
+  try {
+    const session = await host.createSession(config); id = session.id;
+    const timeline: string[] = [];
+    const run = session.run("state-319"); const collected = collect(run, timeline);
+    await until(() => existsSync(`${gate}.ready-0-0`));
+    writeFileSync(`${gate}.go-0-0`, "go");
+    await until(() => timeline.length === 1);
+    const state = new SessionState(config.database, id);
+    await state.sync(host, 1);
+    const initial = state.checkpoint()!;
+    expect(state.items.some(item => item.kind === "message" && item.role === "agent")).toBe(true);
+    writeFileSync(`${gate}.go-0-1`, "go"); await collected;
+    const update = await session.changes(initial.cursor);
+    expect(update.records.some(row => initial.records.some(old => old.id === row.id && BigInt(row.revision) > BigInt(old.revision)))).toBe(true);
+    // A failed fetch must not advance the durable projection cursor.
+    const changes = host.changes.bind(host);
+    host.changes = async () => { throw new Error("simulated read failure"); };
+    await expect(state.sync(host)).rejects.toThrow("simulated read failure");
+    expect(state.checkpoint()).toEqual(initial);
+    host.changes = changes;
+    await state.sync(host, 1);
+    expect(state.items.filter(item => item.kind === "message" && item.role === "agent").map(item => item.kind === "message" && item.text)).toEqual(["state-319:first"]);
+    expected = (await session.history()).records;
+    expect(state.items.map(item => item.record)).toEqual(expected);
+    saved = state.checkpoint();
+    await state.sync(host, 1); expect(state.checkpoint()).toEqual(saved);
+    const foreign = await host.createSession(options("state-foreign"));
+    await expect(foreign.changes(saved!.cursor)).rejects.toThrow("another session");
+  } finally { await host.close(); }
+  const reopened = new BridgeHost(binary);
+  try {
+    const restored = new SessionState(config.database, id, saved!);
+    await restored.sync(reopened, 1);
+    expect(restored.items.map(item => item.record)).toEqual(expected);
+  } finally { await reopened.close(); }
+}, 15000);
+
+test("disposable sessions request provider cleanup and retain local records", async () => {
+  const marker = join(directory, "deleted");
+  const host = new BridgeHost(binary);
+  const config = options("cleanup", "chat", { BRIDGE_TEST_DELETED: marker });
+  let id = "";
+  try {
+    const session = await host.createSession({ ...config, delete_session_on_close: true }); id = session.id;
+    expect(await text(session.run("hello"))).toBe("Hello world");
+  } finally { await host.close(); }
+  expect(readFileSync(marker, "utf8")).toBe('"native-1"');
+  const reopened = new BridgeHost(binary);
+  try { expect((await reopened.history(config.database, id)).records.some(row => row.payload.type === "run_finished")).toBe(true); }
+  finally { await reopened.close(); }
+}, 15000);
+
+test("provider cleanup failure makes close fail instead of claiming success", async () => {
+  const host = new BridgeHost(binary);
+  await host.createSession({ ...options("cleanup-error", "host-delete-error"), delete_session_on_close: true });
+  await expect(host.close()).rejects.toThrow("host exited (1)");
+}, 15000);

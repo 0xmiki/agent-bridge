@@ -180,7 +180,7 @@ fn v4_upgrade_preserves_legacy_records_and_new_answers_survive_reopen() {
         sql.query_row("SELECT version FROM agent_bridge_schema", [], |row| row
             .get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(sql.query_row("SELECT json_extract(payload_json,'$.version') FROM agent_bridge_records WHERE id='answer'", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
     assert_eq!(sql.query_row("SELECT json_extract(payload_json,'$.version') FROM agent_bridge_records WHERE id='legacy'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);

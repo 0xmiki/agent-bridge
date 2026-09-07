@@ -215,6 +215,7 @@ pub enum StoreError {
     AlreadyResolved,
     OpenContextRecord,
     InvalidPageSize,
+    InvalidChangeCursor,
     SequenceExhausted,
     Poisoned,
     Busy,
@@ -235,6 +236,41 @@ impl fmt::Display for StoreError {
     }
 }
 impl Error for StoreError {}
+
+/// Position in one database's coalesced record changes, scoped to one session.
+/// Persist with the projection it describes. Not interchangeable with history sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeCursor {
+    pub epoch: String,
+    pub session_id: SessionId,
+    pub position: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatePage {
+    pub records: Vec<Arc<Snapshot>>,
+    pub cursor: ChangeCursor,
+    pub next_after: Option<u64>,
+    pub page_full: bool,
+}
+
+/// Optional projection synchronization. Changes are latest record upserts, not
+/// an event log. No record deletion is currently supported by RecordStore.
+pub trait ChangeStore: RecordStore {
+    /// Scan current records. Keep the first page's cursor throughout pagination,
+    /// then read changes from it. Pages can overlap newer changes; apply revisions
+    /// monotonically. This is not an immutable historical snapshot.
+    fn snapshot_page(
+        &self,
+        session: &SessionId,
+        cursor: Option<&ChangeCursor>,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<StatePage, StoreError>;
+    /// Read latest changed records in change-position order. Repeated updates can
+    /// coalesce; records seen during snapshot pagination may be returned again.
+    fn changes(&self, cursor: &ChangeCursor, limit: usize) -> Result<StatePage, StoreError>;
+}
 
 /// Local synchronous storage semantics, not a distributed execution scheduler.
 /// Implementations must make each mutation atomic. SQLite owns its versioned

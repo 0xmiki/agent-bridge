@@ -271,6 +271,15 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                 id,
                 &format!("{{\"configOptions\":{}}}", config_options(model, *flag)),
             );
+        } else if line.contains("\"method\":\"session/delete\"") {
+            let id = scalar(&line, "id");
+            if mode == "host-delete-error" {
+                println!(r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":-32601,"message":"deletion unsupported"}}}}"#);
+                io::stdout().flush().unwrap();
+            } else {
+                if let Ok(path) = std::env::var("BRIDGE_TEST_DELETED") { std::fs::write(path, scalar(&line, "sessionId")).unwrap(); }
+                reply(id, "{}");
+            }
         } else if line.contains("\"method\":\"session/prompt\"") {
             let session = scalar(&line, "sessionId");
             let id = scalar(&line, "id");

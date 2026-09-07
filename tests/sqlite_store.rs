@@ -250,7 +250,7 @@ fn migrations_coexist_with_application_tables_and_user_version() {
             .query_row("SELECT version FROM agent_bridge_schema", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
 }
 
@@ -310,7 +310,7 @@ fn upgrades_a_version_one_database_without_losing_records() {
                 row.get::<_, i64>(0)
             })
             .unwrap(),
-        6
+        7
     );
     assert!(
         connection
@@ -731,4 +731,140 @@ fn v2_migration_preserves_handles_and_leaves_legacy_run_configuration_unknown() 
     let reopened = database.open();
     assert_eq!(reopened.get_run(&current.id).unwrap(), current);
     assert_eq!(reopened.get_run(&legacy.id).unwrap(), legacy);
+}
+
+#[test]
+fn changes_cover_old_record_updates_and_overlapping_snapshot_pages() {
+    let database = Database::new();
+    let store = database.open();
+    ready(&store);
+    let session = SessionId::new("s").unwrap();
+    let old = store
+        .insert(draft("old", message("a"), RecordState::Open))
+        .unwrap();
+    store
+        .insert(draft("new", message("b"), RecordState::Complete))
+        .unwrap();
+    let first = store.snapshot_page(&session, None, None, 1).unwrap();
+    let writer = database.open();
+    writer
+        .checkpoint(&old.record.id, 0, message("ab"), RecordState::Open)
+        .unwrap();
+    let final_record = writer
+        .checkpoint(&old.record.id, 1, message("abc"), RecordState::Complete)
+        .unwrap();
+    let second = store
+        .snapshot_page(&session, Some(&first.cursor), first.next_after, 10)
+        .unwrap();
+    assert_eq!(second.cursor, first.cursor);
+    let changed = store.changes(&first.cursor, 10).unwrap();
+    assert_eq!(changed.records, vec![final_record.clone()]);
+    assert!(
+        store
+            .changes(&changed.cursor, 10)
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    let mut projection = std::collections::HashMap::new();
+    for row in first
+        .records
+        .into_iter()
+        .chain(second.records)
+        .chain(changed.records)
+    {
+        projection.insert(row.record.id.clone(), row);
+    }
+    drop(store);
+    drop(writer);
+    let reopened = database.open();
+    for row in reopened.list(&session, None, 100).unwrap() {
+        assert_eq!(projection[&row.record.id], row);
+    }
+    assert_eq!(
+        reopened.changes(&changed.cursor, 10).unwrap().cursor,
+        changed.cursor
+    );
+    let connection = Connection::open(database.path()).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM agent_bridge_record_changes",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn change_cursors_reject_foreign_databases_sessions_and_future_positions() {
+    let database = Database::new();
+    let store = database.open();
+    ready(&store);
+    let session = SessionId::new("s").unwrap();
+    let cursor = store
+        .snapshot_page(&session, None, None, 10)
+        .unwrap()
+        .cursor;
+    let other = Database::new();
+    let foreign = other.open();
+    ready(&foreign);
+    assert_eq!(
+        foreign.changes(&cursor, 10).unwrap_err(),
+        StoreError::InvalidChangeCursor
+    );
+    let mut future = cursor.clone();
+    future.position += 1;
+    assert_eq!(
+        store.changes(&future, 10).unwrap_err(),
+        StoreError::InvalidChangeCursor
+    );
+    let second = SessionId::new("second").unwrap();
+    store.create_session(second.clone()).unwrap();
+    assert_eq!(
+        store
+            .snapshot_page(&second, Some(&cursor), None, 10)
+            .unwrap_err(),
+        StoreError::InvalidChangeCursor
+    );
+    assert_eq!(
+        store
+            .snapshot_page(&session, None, Some(0), 10)
+            .unwrap_err(),
+        StoreError::InvalidChangeCursor
+    );
+}
+
+#[test]
+fn change_index_backfills_v6_and_rolls_back_with_record_updates() {
+    let database = Database::new();
+    let store = database.open();
+    ready(&store);
+    let record = store
+        .insert(draft("old", message("kept"), RecordState::Open))
+        .unwrap();
+    drop(store);
+    let connection = Connection::open(database.path()).unwrap();
+    connection.execute_batch("DROP TRIGGER agent_bridge_record_insert_change; DROP TRIGGER agent_bridge_record_update_change; DROP TABLE agent_bridge_record_changes; DROP TABLE agent_bridge_change_clock; UPDATE agent_bridge_schema SET version = 6;").unwrap();
+    let store = database.open();
+    let cursor = store
+        .snapshot_page(&SessionId::new("s").unwrap(), None, None, 100)
+        .unwrap()
+        .cursor;
+    assert_eq!(store.get(&record.record.id).unwrap(), record);
+    connection.execute_batch("BEGIN IMMEDIATE; UPDATE agent_bridge_records SET revision = revision + 1 WHERE id = 'old'; ROLLBACK;").unwrap();
+    let changes = store.changes(&cursor, 100).unwrap();
+    assert_eq!(changes.cursor, cursor);
+    assert!(changes.records.is_empty());
+    store
+        .checkpoint(
+            &record.record.id,
+            0,
+            message("changed"),
+            RecordState::Complete,
+        )
+        .unwrap();
+    assert_eq!(store.changes(&cursor, 100).unwrap().records.len(), 1);
 }

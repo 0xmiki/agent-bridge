@@ -1,5 +1,6 @@
 import { BridgeHost, type StoredRecord } from "./client";
 import assert from "node:assert/strict";
+import { SessionState } from "./state";
 import { resolve } from "node:path";
 
 const [database, workspace, executable, ...args] = process.argv.slice(2);
@@ -8,9 +9,14 @@ const binary = process.env.AGENT_BRIDGE_HOST ?? resolve(import.meta.dir, "../tar
 const host = new BridgeHost(binary);
 let sessionId = "";
 let snapshot: StoredRecord[] = [];
+let stateCheckpoint: ReturnType<SessionState["checkpoint"]>;
 const phrase = `violet lighthouse ${crypto.randomUUID()}`;
 try {
-  const session = await host.createSession({ database: resolve(database), workspace: resolve(workspace), executable, args }); sessionId = session.id;
+  const codexTest = executable.includes("codex-acp") || args.some(arg => arg.includes("codex-acp")) || process.env.AGENT_BRIDGE_CODEX_TEST === "1";
+  const session = await host.createSession({ database: resolve(database), workspace: resolve(workspace), executable, args, delete_session_on_close: codexTest }); sessionId = session.id;
+  const state = new SessionState(resolve(database), session.id);
+  await state.sync(host);
+  assert.equal(state.items.length, 0);
   let turn = 0;
   for (const prompt of [`Remember the phrase ${phrase}. Reply only remembered. Do not use tools.`, "What phrase did I ask you to remember? Reply only the phrase. Do not use tools."]) {
     const run = session.run(prompt);
@@ -59,6 +65,9 @@ try {
   if (racedWithCompletion) assert.equal(ended.status, "completed");
   console.log("Cancellation race outcome:", ended.status);
   snapshot = (await session.history()).records;
+  await state.sync(host, 2);
+  assert.deepEqual(state.items.map(item => item.record), snapshot);
+  stateCheckpoint = state.checkpoint();
   assert.ok(snapshot.every(record => record.session_id === session.id && (
     record.state === "complete" ||
     (record.state === "interrupted" && record.run_id === ended.run_id && ended.status === "cancelled")
@@ -69,6 +78,9 @@ const reopened = new BridgeHost(binary);
 try {
   const records = (await reopened.history(resolve(database), sessionId)).records;
   assert.deepEqual(records, snapshot);
+  const state = new SessionState(resolve(database), sessionId, stateCheckpoint);
+  await state.sync(reopened, 2);
+  assert.deepEqual(state.items.map(item => item.record), snapshot);
   console.log("Verified reopened records:", records.length);
 }
 finally { await reopened.close(); }

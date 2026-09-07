@@ -56,11 +56,22 @@ Requests contain `version`, `id`, `method`, and `params`. Responses carry the sa
 ID and either `ok: true, result` or `ok: false, error`. Events carry `event`;
 run events also carry the original request ID as `stream`, plus session/run IDs.
 
-Methods: `ping`, `create_session`, `run`, `cancel`, `respond`, `history`, `shutdown`.
+Methods: `ping`, `create_session`, `run`, `cancel`, `respond`, `history`, `snapshot`,
+`changes`, `shutdown`.
 The host owns identifiers and permission routing. The client imports no ACP SDK.
 `client.ts` defines the current DTOs. Record sequence/revision and pagination cursors
 are decimal strings to preserve precision. Payload data remains an untyped portable
-envelope; typed projections are a future gate.
+envelope. [State synchronization](../docs/state-sync.md) adds typed readers in
+`state.ts` and a checkpoint containing both records and their change cursor.
+
+For disposable provider sessions, set `delete_session_on_close: true`. Shutdown
+requests ACP session deletion and exits nonzero if cleanup fails. The pinned Codex
+adapter maps this to archiving, so the thread leaves active history but is not
+permanently erased. Bridge SQLite records remain available for verification.
+The example enables cleanup for recognized codex-acp launches; set
+`AGENT_BRIDGE_CODEX_TEST=1` for a custom Codex wrapper. This is opt-in for application
+sessions. Forced host death or a failure before a native session handle is returned
+can still prevent cleanup; general crash recovery is separate work.
 
 ## Ownership and limits
 
@@ -86,7 +97,8 @@ EOF under pressure and a stalled consumer that keeps stdin open. This is a whole
 failure policy, not independent subscriptions. Non-Unix pipes and arbitrary disk
 stalls still need implementation and verification before wider support claims.
 
-History pagination orders record creation, not subsequent changes. Reopening history
+History pagination orders record creation; `snapshot` and `changes` support record
+updates and reconnecting projections. Reopening history
 does not reconnect a native session or recover uncertain work. Tools, structured
 questions, context policies, restoration, and child execution currently have Rust
 APIs but are not exposed by this host. Session diagnostics and typed state projections

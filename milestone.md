@@ -1,6 +1,6 @@
 # Working milestones
 
-Updated September 7, 2026. Revise this plan when evidence warrants it and record why.
+Updated September 8, 2026. Revise this plan when evidence warrants it and record why.
 The previous M0–M8 plan and evidence remain in [milestone history](milestone-history.md).
 
 ## Product promise
@@ -30,13 +30,21 @@ objects in application code. Acceptance: [quality gates 1–3](docs/quality-gate
 - [x] Distinct interleaved streams, retained fixture context, and exact reopened history.
 - [x] Reject foreign/stale/invalid/duplicate permission responses without consuming valid requests.
 - [x] Explicit SQLite lock failure, independent-database session progress, and no automatic retry.
-- [ ] Typed projections and snapshot/change cursors, including updates to old records.
+- [x] SQLite snapshot/change cursors, old-record updates, and initial typed client projections.
+- [ ] Extend typed readers to bridge-owned receipts and settle the public projection API.
 - [ ] Arbitrary storage stalls, shared-database contention policy, and independent subscriber isolation.
 - [ ] Document equivalent Rust usage and the settled error/ownership contract.
 
-Next slice: durable change queries and host state projection. Fault tests exposed and
+Next slice: shared-database contention policy and remaining runtime isolation tests.
+The first [state synchronization contract](docs/state-sync.md) is implemented with
+coalesced record changes rather than a transcript-revision log. Fault tests exposed and
 fixed unbounded stdout writes, long lock waits, and colliding permission tokens. The
 new bounded failure policies do not replace the remaining storage/recovery work.
+
+Test hygiene: disposable Codex checks must request provider session cleanup after
+verification. `host/example.ts` enables this automatically for codex-acp launches;
+custom wrappers must set `AGENT_BRIDGE_CODEX_TEST=1`. The pinned adapter archives the
+thread out of active history. Cleanup failure must be reported, not silently ignored.
 
 ## H2 — Application interactions (planned)
 

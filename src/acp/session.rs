@@ -531,6 +531,31 @@ impl<'connection> AcpSession<'connection> {
         &self.info
     }
 
+    /// Consume this handle and request provider-defined session deletion.
+    /// Some adapters archive rather than permanently erase history. Unsupported
+    /// requests fail explicitly. Local bridge records are retained.
+    pub async fn delete(self) -> Result<(), AcpError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.connection
+            .connection
+            .send_request(
+                agent_client_protocol::schema::v1::DeleteSessionRequest::new(
+                    self.info.session_id.clone(),
+                ),
+            )
+            .on_receiving_result(move |result| async move {
+                let _ = tx.send(result);
+                Ok(())
+            })
+            .map_err(AcpError::Protocol)?;
+        tokio::time::timeout(self.connection.session_timeout, rx)
+            .await
+            .map_err(|_| AcpError::RequestTimedOut)?
+            .map_err(|_| AcpError::Closed)?
+            .map_err(AcpError::Protocol)?;
+        Ok(())
+    }
+
     /// Start a text-only run. Callers assign unique run IDs.
     ///
     /// ACP retains this native session's prior context. The run freezes the latest

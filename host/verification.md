@@ -66,3 +66,26 @@ record-count expectations or a guarantee that cancellation always wins the race.
 
 Forced host death, change subscriptions, shared-database contention policy, arbitrary
 disk stalls, host application tools, and non-Linux lifecycle remain open.
+
+## State synchronization and test cleanup, September 8
+
+178 Rust tests, fourteen host tests with 128 assertions, Clippy, rustfmt,
+default-feature-free compilation, and TypeScript checking passed locally.
+Schema 7 tests cover coalesced old-record updates, overlapping snapshot pages,
+database/session cursor validation, future positions, migration backfill, and rollback.
+The client test saves a projection/cursor pair, verifies a failed refresh leaves it
+unchanged, and resumes through a fresh host without duplicate transcript items.
+
+OpenCode 1.18.25 and Codex CLI 0.153.4 through codex-acp 1.10.0 passed the stricter
+live demo with typed projections and saved checkpoints. Both completed two turns
+and cancelled the third; exact reopened state contained 13 and 20 records respectively.
+
+The Codex test enabled `delete_session_on_close`. The ACP deletion request succeeded,
+and a read-only check of the exact test thread in Codex's database confirmed
+`archived = 1`. The pinned adapter maps deletion to archive, not permanent erasure.
+Four older exact host-smoke matches were also archived through Codex's supported
+app-server API after validating their workspace and first test prompt.
+
+The fixture suite covers successful provider cleanup with bridge records retained,
+and cleanup rejection causing a nonzero host exit. These checks do not establish
+cleanup after abrupt host death or failure before the adapter returns a session ID.

@@ -3,7 +3,7 @@ mod output;
 use agent_bridge::acp::{
     AcpConnection, AcpEvent, AcpLaunch, ContentBlock, RecordActors, SessionUpdate,
 };
-use agent_bridge::records::{RecordStore, Snapshot, SqliteStore};
+use agent_bridge::records::{ChangeCursor, ChangeStore, RecordStore, Snapshot, SqliteStore};
 use agent_bridge::{ActorId, RunId, RunStatus, SessionId, SlotId};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -53,6 +53,8 @@ struct Open {
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    #[serde(default)]
+    delete_session_on_close: bool,
 }
 #[derive(Clone)]
 struct Output {
@@ -104,6 +106,51 @@ fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
         STORAGE_LOCK_WAIT,
     )?;
     let session = SessionId::new(string(&request.params, "session_id")?)?;
+    if request.method == "snapshot" || request.method == "changes" {
+        let cursor = request
+            .params
+            .get("cursor")
+            .filter(|v| !v.is_null())
+            .map(|v| -> Result<ChangeCursor, Box<dyn std::error::Error>> {
+                Ok(ChangeCursor {
+                    epoch: string(v, "epoch")?.into(),
+                    session_id: SessionId::new(string(v, "session_id")?)?,
+                    position: string(v, "position")?.parse()?,
+                })
+            })
+            .transpose()?;
+        if cursor.as_ref().is_some_and(|c| c.session_id != session) {
+            return Err("cursor belongs to another session".into());
+        }
+        let limit = request
+            .params
+            .get("limit")
+            .map(|v| v.as_u64().ok_or("invalid limit"))
+            .transpose()?
+            .unwrap_or(100);
+        if !(1..=1000).contains(&limit) {
+            return Err("limit must be 1..=1000".into());
+        }
+        let page = if request.method == "changes" {
+            store.changes(cursor.as_ref().ok_or("cursor required")?, limit as usize)?
+        } else {
+            let after = request
+                .params
+                .get("after")
+                .filter(|v| !v.is_null())
+                .map(|v| {
+                    v.as_str()
+                        .ok_or("invalid after")?
+                        .parse::<u64>()
+                        .map_err(|_| "invalid after")
+                })
+                .transpose()?;
+            store.snapshot_page(&session, cursor.as_ref(), after, limit as usize)?
+        };
+        return Ok(
+            json!({"records":page.records.iter().map(|r|snapshot(r)).collect::<Vec<_>>(),"cursor":{"epoch":page.cursor.epoch,"session_id":page.cursor.session_id.as_str(),"position":page.cursor.position.to_string()},"next_after":page.next_after.map(|n|n.to_string()),"page_full":page.page_full}),
+        );
+    }
     let after = request
         .params
         .get("after")
@@ -165,6 +212,7 @@ async fn session_worker(
         result = setup => match result { Ok(value)=>value, Err(error)=>{ output.error(&create_id,"setup_failed",error); return; } },
     };
     let result = async {
+        store.create_session(SessionId::new(&session_id).unwrap()).map_err(|e| e.to_string())?;
         let slot_id = identity("slot");
         let mut session = tokio::select! {
             _ = output.stop.cancelled() => return Ok::<_, String>(()),
@@ -225,6 +273,12 @@ async fn session_worker(
             drop(run);
             if output.stop.is_cancelled() { break; }
             output.emit(json!({"event":"run_finished","stream":request.id,"session_id":session_id,"run_id":run_id,"status":status,"reason":reason,"recording_error":failure}));
+        }
+        if open.delete_session_on_close {
+            if let Err(error) = session.delete().await {
+                output.failed.store(true, Ordering::SeqCst);
+                output.emit(json!({"event":"session_error","session_id":session_id,"message":format!("provider cleanup failed: {error}")}));
+            } else { eprintln!("provider session cleanup completed for {session_id}"); }
         }
         Ok(())
     }.await;
@@ -355,7 +409,7 @@ fn main() {
                     ));
                 }));
             }
-            "history" => {
+            "history" | "snapshot" | "changes" => {
                 if reads.load(Ordering::SeqCst) >= 4 {
                     output.error(
                         &request.id,

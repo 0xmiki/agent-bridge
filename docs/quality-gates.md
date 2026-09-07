@@ -29,8 +29,12 @@ exit checked within five seconds. Abrupt host death and other OSes remain open.
 
 History tests compare content, attribution, terminal records, and exact snapshots
 including IDs/revisions after reopen, through full and paginated reads.
-Creation-sequence pagination is not a change cursor.
-Subscriptions, update cursors, and typed client projections remain open.
+Creation-sequence pagination remains separate from the new SQLite change cursor.
+Schema 7 and host `snapshot`/`changes` now support coalesced old-record updates,
+overlapping snapshot pages, and persisted client checkpoints. Tests reject foreign
+cursors and prove a failed refresh does not advance local state. Initial typed
+readers cover common transcript items; receipt readers and independent subscription
+scheduling remain open. See [state synchronization](state-sync.md).
 
 ## 3. Runtime isolation
 

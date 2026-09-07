@@ -1,3 +1,4 @@
+mod changes;
 mod codec;
 mod continuation;
 mod execution;
@@ -20,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("sqlite/migrations/0004_resources.sql"),
     include_str!("sqlite/migrations/0005_questions.sql"),
     include_str!("sqlite/migrations/0006_execution_relations.sql"),
+    include_str!("sqlite/migrations/0007_changes.sql"),
 ];
 const RECORD_COLUMNS: &str = "id, session_id, run_id, sequence, actor_id, reply_to_id, source_json, payload_json, state, revision, initial_json";
 
