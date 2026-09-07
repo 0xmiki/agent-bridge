@@ -161,7 +161,7 @@ fn v3_database_upgrades_resources_without_changing_record_tables() {
         sql.query_row("SELECT version FROM agent_bridge_schema", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
     drop(sql);
     drop(store);

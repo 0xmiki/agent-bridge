@@ -107,7 +107,7 @@ Later delivery receipts use the same version for that run.
 Portable restoration with either policy feature uses restoration-report data version
 `2`, with a `context_policy` field. Policy-free reports and native restoration retain
 version 1. Policy-free input receipts retain their prior text/image versions 1/2.
-The outer record JSON format stays at version 1 and SQL schema stays at version 4.
+These inner data versions are independent of the [SQLite document format](sqlite.md).
 Readers must inspect namespace, record name, and inner data version.
 
 Missing authorization or unsupported retained inputs fail before prompt dispatch.

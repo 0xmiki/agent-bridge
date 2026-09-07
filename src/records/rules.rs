@@ -13,6 +13,9 @@ pub(super) fn same_draft(snapshot: &Snapshot, draft: &Draft) -> bool {
 }
 
 pub(super) fn validate(payload: &Payload, state: RecordState) -> Result<(), StoreError> {
+    if let Payload::Question(question) = payload {
+        question.validate()?;
+    }
     if let Payload::Permission { options, .. } = payload {
         let mut ids = std::collections::HashSet::new();
         if options
@@ -22,7 +25,9 @@ pub(super) fn validate(payload: &Payload, state: RecordState) -> Result<(), Stor
             return Err(StoreError::InvalidPayload);
         }
     }
-    if matches!(payload, Payload::Decision { .. }) && state != RecordState::Complete {
+    if matches!(payload, Payload::Decision { .. } | Payload::Answer { .. })
+        && state != RecordState::Complete
+    {
         return Err(StoreError::InvalidPayload);
     }
     Ok(())
@@ -56,7 +61,7 @@ pub(super) fn checkpoint(
     {
         return Err(StoreError::InvalidPayload);
     }
-    if matches!(payload, Payload::Permission { .. })
+    if matches!(payload, Payload::Permission { .. } | Payload::Question(_))
         && (payload != current.record.payload || next == RecordState::Complete)
     {
         return Err(StoreError::InvalidDecision);
@@ -83,22 +88,24 @@ pub(super) fn resolve_request(
     if original.state != RecordState::Open {
         return Err(StoreError::Finalized);
     }
-    let Payload::Permission { options, .. } = &original.record.payload else {
-        return Err(StoreError::InvalidDecision);
-    };
-    let Payload::Decision { outcome, .. } = &decision.payload else {
-        return Err(StoreError::InvalidDecision);
-    };
     if decision.reply_to_id.as_ref() != Some(&original.record.id)
         || decision.session_id != original.record.session_id
         || decision.run_id != original.record.run_id
     {
         return Err(StoreError::InvalidDecision);
     }
-    if let PermissionOutcome::Selected(id) = outcome
-        && !options.iter().any(|option| &option.id == id)
-    {
-        return Err(StoreError::InvalidDecision);
+    match (&original.record.payload, &decision.payload) {
+        (Payload::Permission { options, .. }, Payload::Decision { outcome, .. }) => {
+            if let PermissionOutcome::Selected(id) = outcome
+                && !options.iter().any(|option| &option.id == id)
+            {
+                return Err(StoreError::InvalidDecision);
+            }
+        }
+        (Payload::Question(question), Payload::Answer { outcome, .. }) => {
+            question.validate_answer(outcome)?
+        }
+        _ => return Err(StoreError::InvalidDecision),
     }
     let mut resolved = original.clone();
     resolved.state = RecordState::Complete;

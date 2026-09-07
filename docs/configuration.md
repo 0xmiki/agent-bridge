@@ -84,7 +84,8 @@ to setters.
 
 SQLite schema version 3 adds `config_json` and `continuation_id` to run registrations.
 Existing runs from versions 1 and 2 migrate to unknown configuration with no inferred
-continuation. Record JSON format remains version 1. New run configuration is immutable
+continuation. Current and legacy document formats are described in [SQLite storage](sqlite.md).
+New run configuration is immutable
 and survives database reopen.
 
 Runs on a resumed session reference its originating claimed continuation. Several

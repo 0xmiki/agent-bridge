@@ -9,6 +9,7 @@ default = []
 records = ["dep:serde_json"]
 structured = ["records", "dep:serde"]
 tools = ["records", "dep:serde", "dep:schemars", "dep:tokio", "dep:tokio-util"]
+questions = ["records", "dep:tokio", "dep:tokio-util"]
 mcp = ["tools", "dep:rmcp"]
 sqlite = ["records", "dep:rusqlite", "dep:serde", "dep:sha2"]
 acp = ["records", "dep:serde", "dep:agent-client-protocol", "dep:tokio", "dep:base64", "dep:sha2"]
@@ -76,3 +77,7 @@ required-features = ["acp", "sqlite", "structured"]
 [[example]]
 name = "application_tools"
 required-features = ["acp", "mcp"]
+
+[[example]]
+name = "application_questions"
+required-features = ["tools", "questions", "sqlite"]

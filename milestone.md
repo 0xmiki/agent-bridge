@@ -19,7 +19,7 @@ tool use must also work in examples independent of those applications.
 
 ## Current position
 
-Status reviewed September 6, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
+Status reviewed September 7, 2026. M0's baseline is `10b9113`; M1 evidence is linked below.
 
 - M0 and M1 are complete. M2 is accepted for OpenCode and Codex, with Claude's
   authenticated workflows deferred at the user's request.
@@ -42,6 +42,8 @@ Status reviewed September 6, 2026. M0's baseline is `10b9113`; M1 evidence is li
   explicit skill-text fallback; native skill registration/activation remains unverified.
 - M4's typed tool registry and MCP adapter add five tests, for 161 total. Both
   providers passed a real call to the Rust application-tool server.
+- Structured application questions add seven tests, for 168 total. Schema 5 writes
+  document format 2 and retains legacy format-1 reading.
 - OpenCode 1.18.25 has passed real prompt streaming and native resume checks.
 - Its model-selection interface also passed a two-model context-continuity check
   with persisted per-run settings.
@@ -237,13 +239,18 @@ session, and slot, and an MCP server built on the official Rust SDK. The
 [application tool example](examples/application_tools.rs) passed with OpenCode and
 Codex. Cancellation is cooperative; host execution durability is not claimed.
 
-Next slice: structured questions and answers, followed by execution relationships,
-child authority, concurrency/delegation limits, and application-defined routing.
+The second increment adds [structured application questions](docs/questions.md),
+atomic answers, cancellation-aware waits, and a tool/host interaction example.
+Native ACP elicitation remains unadvertised and unmapped; this increment does not
+claim native question compatibility.
+
+Next slice: execution relationships and explicit child context/authority selection,
+then concurrency/delegation limits and application-defined routing.
 
 - [x] Make existing MCP attachment convenient and verify real app-tool round trips.
 - [x] Add typed application-tool registration and the required MCP bridge.
 - [x] Separate tool declarations, execution grants, and user permission decisions.
-- [ ] Preserve structured questions and answers alongside permission interactions.
+- [x] Preserve structured questions and answers alongside permission interactions.
 - [ ] Support execution relationships and explicit child context/authority selection.
 - [ ] Represent provider-managed subagent activity without inventing unavailable control.
 - [ ] Enforce configured concurrency and delegation limits.

@@ -1,0 +1,3 @@
+-- Questions and answers use the existing records and decision-resolution tables.
+-- The schema gate prevents older writers from opening a database that can now
+-- contain record documents v2 and first-class question/answer payloads.

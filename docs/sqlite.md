@@ -26,7 +26,7 @@ Clones share one connection; separate handles can open the same file. Operations
 are synchronous and may wait up to five seconds for a write lock, so keep them off
 UI threads and account for blocking in async hosts. Lock contention returns `Busy`.
 
-## Schema version 4
+## Schema version 5
 
 | Table | Responsibility |
 | --- | --- |
@@ -34,7 +34,7 @@ UI threads and account for blocking in async hosts. Lock contention returns `Bus
 | `agent_bridge_sessions` | Session identity and next record sequence |
 | `agent_bridge_runs` | Execution identity, session, slot, context, configuration, and continuation origin |
 | `agent_bridge_records` | Attributed payloads, ordering, revisions, and original-insert data |
-| `agent_bridge_decisions` | One decision record for each resolved permission request |
+| `agent_bridge_decisions` | One response record for each resolved permission request or question |
 | `agent_bridge_continuations` | Single-use provider handoffs and successor chains |
 | `agent_bridge_resource_versions` | Immutable resource ID/revision, media type, and blob digest |
 | `agent_bridge_resource_blobs` | One binary blob per SHA-256 digest |
@@ -46,10 +46,12 @@ continuations in
 Opening a version 1 database upgrades it transactionally and preserves its records.
 Version 3 adds run configuration and continuation links in
 [0003_run_configuration.sql](../src/records/sqlite/migrations/0003_run_configuration.sql).
-Older runs keep unknown configuration and a null continuation link. Record JSON
-format remains version 1.
+Older runs keep unknown configuration and a null continuation link.
 Version 4 adds immutable resource storage in
 [0004_resources.sql](../src/records/sqlite/migrations/0004_resources.sql).
+Version 5 gates [question/answer payloads](questions.md) and JSON document format 2.
+It needs no new tables and does not rewrite existing format-1 rows. The decoder
+supports formats 1 and 2; older writers reject the schema-5 marker on open.
 Slots remain
 host configuration; this record store persists their references, not executables,
 or credentials. Run rows now preserve configuration reports independently of slot
@@ -72,7 +74,7 @@ documents with an explicit format version:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "data": {
     "type": "message",
     "data": {
@@ -83,7 +85,8 @@ documents with an explicit format version:
 }
 ```
 
-The decoder rejects unsupported document versions and malformed content. It does
+New writes use version 2. The decoder accepts legacy version 1 and rejects newer
+unsupported document versions and malformed content. It does
 not skip unreadable records when listing history. Typed IDs retain their validation
 when deserialized. Namespaced extension payloads preserve their arbitrary JSON.
 
@@ -121,7 +124,7 @@ corruption, rollback after an injected SQL failure, and independent-connection r
 ACP fixture runs also read transcripts and resume a saved continuation after SQLite
 reopens.
 
-The public API can keep improving, but SQL schema versions 1 through 4 and JSON format 1
+The public API can keep improving, but SQL schema versions 1 through 5 and JSON formats 1/2
 are now compatibility obligations. New schema steps belong in migrations. New JSON
 formats need an explicit upgrade or a retained old-version decoder. Async access,
 configurable lock timeouts,

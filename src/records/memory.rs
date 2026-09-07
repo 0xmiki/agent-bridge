@@ -155,7 +155,10 @@ impl RecordStore for MemoryStore {
 
     fn insert(&self, draft: Draft) -> Result<Arc<Snapshot>, StoreError> {
         let mut state = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
-        if matches!(draft.payload, Payload::Decision { .. }) {
+        if matches!(
+            draft.payload,
+            Payload::Decision { .. } | Payload::Answer { .. }
+        ) {
             return Err(StoreError::InvalidDecision);
         }
         if let Some(entry) = state.records.get(&draft.id) {
@@ -165,7 +168,11 @@ impl RecordStore for MemoryStore {
                 Err(StoreError::IdentityConflict)
             };
         }
-        if matches!(draft.payload, Payload::Permission { .. }) && draft.state != RecordState::Open {
+        if matches!(
+            draft.payload,
+            Payload::Permission { .. } | Payload::Question(_)
+        ) && draft.state != RecordState::Open
+        {
             return Err(StoreError::InvalidPayload);
         }
         let snapshot = state.prepare(draft)?;

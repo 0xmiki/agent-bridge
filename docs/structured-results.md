@@ -104,8 +104,8 @@ can still exist. Dropping or crashing before validation may leave a contract and
 partial output without a validation receipt; absence of that receipt is not success.
 No automatic repair, revalidation, or provider retry happens on SQLite reopen.
 
-No SQL migration is required. SQL schema remains version 4, and the outer record
-JSON document remains version 1. Readers must check namespace, record name, and
+These extensions have no dedicated SQL tables. Their inner data versions are separate
+from the [SQLite document format](sqlite.md). Readers must check namespace, record name, and
 inner data version.
 
 ## Background-task example

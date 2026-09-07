@@ -250,7 +250,7 @@ fn migrations_coexist_with_application_tables_and_user_version() {
             .query_row("SELECT version FROM agent_bridge_schema", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -310,7 +310,7 @@ fn upgrades_a_version_one_database_without_losing_records() {
                 row.get::<_, i64>(0)
             })
             .unwrap(),
-        4
+        5
     );
     assert!(
         connection
@@ -358,7 +358,7 @@ fn newer_schemas_and_unversioned_reserved_tables_are_rejected() {
 }
 
 #[test]
-fn json_v1_shape_is_explicit_and_corruption_is_not_silently_skipped() {
+fn json_v2_shape_is_explicit_and_corruption_is_not_silently_skipped() {
     let database = Database::new();
     let store = database.open();
     ready(&store);
@@ -376,11 +376,11 @@ fn json_v1_shape_is_explicit_and_corruption_is_not_silently_skipped() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
         json!({
-            "version":1,"data":{"type":"message","data":{"kind":"agent","message":{"content":[{"type":"text","data":"hello"}]}}}
+            "version":2,"data":{"type":"message","data":{"kind":"agent","message":{"content":[{"type":"text","data":"hello"}]}}}
         })
     );
     let mut newer: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    newer["version"] = json!(2);
+    newer["version"] = json!(3);
     connection
         .execute(
             "UPDATE agent_bridge_records SET payload_json = ?1 WHERE id = 'm'",
@@ -389,11 +389,11 @@ fn json_v1_shape_is_explicit_and_corruption_is_not_silently_skipped() {
         .unwrap();
     assert!(matches!(
         store.get(&RecordId::new("m").unwrap()),
-        Err(StoreError::UnsupportedDataVersion(2))
+        Err(StoreError::UnsupportedDataVersion(3))
     ));
     assert!(matches!(
         store.list(&SessionId::new("s").unwrap(), None, 100),
-        Err(StoreError::UnsupportedDataVersion(2))
+        Err(StoreError::UnsupportedDataVersion(3))
     ));
     connection
         .execute(

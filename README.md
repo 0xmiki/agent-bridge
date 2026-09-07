@@ -38,6 +38,8 @@ JSON and application rules, with persisted evidence separate from run completion
 without equating document delivery with native activation.
 [Application tools](docs/application-tools.md) add typed asynchronous handlers,
 session/slot grants, and a host-bound MCP server.
+[Structured questions](docs/questions.md) add validated, atomic answers and a local
+awaitable handle for application-managed interactions.
 
 The `providers` feature adds OpenCode, Codex, and Claude launch definitions,
 read-only discovery, explicit profiles, and setup diagnostics through a shared

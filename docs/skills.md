@@ -75,8 +75,8 @@ replay it. Native skill activation state is not transferred. Use
 `RestorationPolicy::portable(plan)` to construct a portable policy; the enum stores
 the growing plan behind a `Box`.
 
-Policy-free receipt versions remain unchanged. SQL schema is still version 4, and
-outer record JSON is still version 1. New native integrations will need actual
+Policy-free receipt versions remain unchanged. Inner receipt versions are independent
+of the [SQLite document format](sqlite.md). New native integrations will need actual
 capability and observation mappings before they can claim registration or activation.
 
 ## Verification

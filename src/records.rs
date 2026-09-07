@@ -6,8 +6,13 @@
 mod memory;
 pub use memory::MemoryStore;
 mod continuation;
+mod question;
 mod rules;
 pub use continuation::{Continuation, ContinuationRecord, ContinuationState, ContinuationStore};
+pub use question::{
+    AnswerDelivery, AnswerOutcome, AnswerValue, Question, QuestionField, QuestionFieldKind,
+    QuestionOption,
+};
 #[cfg(feature = "sqlite")]
 mod sqlite;
 #[cfg(feature = "sqlite")]
@@ -117,6 +122,11 @@ pub enum CompletionReason {
     )
 )]
 pub enum Payload {
+    Question(Question),
+    Answer {
+        outcome: AnswerOutcome,
+        delivery: AnswerDelivery,
+    },
     Message {
         kind: MessageKind,
         message: Message,

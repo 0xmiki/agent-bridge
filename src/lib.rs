@@ -27,6 +27,8 @@ pub mod structured;
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "questions")]
+pub mod questions;
 #[cfg(feature = "tools")]
 pub mod tools;
 

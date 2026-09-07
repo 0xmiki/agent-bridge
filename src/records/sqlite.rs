@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("sqlite/migrations/0002_continuations.sql"),
     include_str!("sqlite/migrations/0003_run_configuration.sql"),
     include_str!("sqlite/migrations/0004_resources.sql"),
+    include_str!("sqlite/migrations/0005_questions.sql"),
 ];
 const RECORD_COLUMNS: &str = "id, session_id, run_id, sequence, actor_id, reply_to_id, source_json, payload_json, state, revision, initial_json";
 
@@ -429,7 +430,10 @@ impl RecordStore for SqliteStore {
 
     fn insert(&self, draft: Draft) -> Result<Arc<Snapshot>, StoreError> {
         self.write(|connection| {
-            if matches!(draft.payload, Payload::Decision { .. }) {
+            if matches!(
+                draft.payload,
+                Payload::Decision { .. } | Payload::Answer { .. }
+            ) {
                 return Err(StoreError::InvalidDecision);
             }
             if let Some(existing) = entry(connection, &draft.id)? {
@@ -439,8 +443,10 @@ impl RecordStore for SqliteStore {
                     Err(StoreError::IdentityConflict)
                 };
             }
-            if matches!(draft.payload, Payload::Permission { .. })
-                && draft.state != RecordState::Open
+            if matches!(
+                draft.payload,
+                Payload::Permission { .. } | Payload::Question(_)
+            ) && draft.state != RecordState::Open
             {
                 return Err(StoreError::InvalidPayload);
             }

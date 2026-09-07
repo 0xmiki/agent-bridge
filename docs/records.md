@@ -2,7 +2,8 @@
 
 Working implementation. `MemoryStore` is process-local and loses its data when the
 application exits. The optional [SQLite adapter](sqlite.md) persists records across
-restarts. Its SQL schema is version 3 and record JSON remains version 1. Future format
+restarts. Its SQL schema is version 5; new JSON documents use version 2 and legacy
+version 1 remains readable. Future format
 changes need explicit compatibility handling while the public API evolves.
 
 ## Recorded runs
@@ -86,7 +87,7 @@ clones and, for SQLite, independent connections to the same database:
 - Record ownership matching the registered run's session.
 - Idempotent retries of original insertions, even after later checkpoints.
 - Revision checks for updates; stale writes and finalized mutations fail.
-- One validated permission decision appended atomically with request finalization.
+- One validated permission decision or question answer appended atomically with request finalization.
 
 Reads share snapshots through `Arc` instead of copying whole transcripts. The memory
 backend retains creation and current snapshots for insertion retries, sharing them
