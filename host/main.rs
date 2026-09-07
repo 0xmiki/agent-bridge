@@ -1,4 +1,5 @@
 //! Experimental owned ACP host. Stdout is exclusively protocol v1 JSON-lines.
+mod output;
 use agent_bridge::acp::{
     AcpConnection, AcpEvent, AcpLaunch, ContentBlock, RecordActors, SessionUpdate,
 };
@@ -8,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    io::{BufRead, Write},
+    io::BufRead,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -20,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_SESSIONS: usize = 8;
+const STORAGE_LOCK_WAIT: Duration = Duration::from_millis(100);
 static NEXT: AtomicU64 = AtomicU64::new(0);
 fn identity(prefix: &str) -> String {
     format!(
@@ -97,7 +99,10 @@ fn snapshot(value: &Snapshot) -> Value {
         "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload})
 }
 fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
-    let store = SqliteStore::open(string(&request.params, "database")?)?;
+    let store = SqliteStore::open_with_busy_timeout(
+        string(&request.params, "database")?,
+        STORAGE_LOCK_WAIT,
+    )?;
     let session = SessionId::new(string(&request.params, "session_id")?)?;
     let after = request
         .params
@@ -141,7 +146,8 @@ async fn session_worker(
                 "database/workspace must be absolute paths and executable must be nonempty".into(),
             );
         }
-        let store = SqliteStore::open(&open.database).map_err(|e| e.to_string())?;
+        let store = SqliteStore::open_with_busy_timeout(&open.database, STORAGE_LOCK_WAIT)
+            .map_err(|e| e.to_string())?;
         let mut launch = AcpLaunch::new(open.executable);
         for argument in open.args {
             launch = launch.arg(argument);
@@ -174,7 +180,7 @@ async fn session_worker(
                 user:ActorId::new("user").unwrap(),agent:ActorId::new("assistant").unwrap(),host:ActorId::new("host").unwrap(),
             }) { Ok(run)=>run,Err(error)=>{output.error(&request.id,"start_failed",error);continue;} };
             output.ok(&request.id,json!({"run_id":run_id,"session_id":session_id}));
-            let mut permissions: HashMap<String, agent_bridge::acp::PermissionId> = HashMap::new(); let mut next_permission = 0usize;
+            let mut permissions: HashMap<String, agent_bridge::acp::PermissionId> = HashMap::new();
             let mut reason = None; let mut failure = None;
             loop {
                 tokio::select! {
@@ -204,7 +210,7 @@ async fn session_worker(
                             output.emit(json!({"event":"text_delta","stream":request.id,"session_id":session_id,"run_id":run_id,"text":text.text}));
                         },
                         Ok(Some(AcpEvent::Permission {id,request:permission})) if run.permission_pending(&id) => {
-                            let token=format!("permission-{next_permission}"); next_permission+=1;
+                            let token=identity("permission");
                             permissions.insert(token.clone(),id);
                             output.emit(json!({"event":"permission","stream":request.id,"session_id":session_id,"run_id":run_id,"permission_id":token,
                                 "title":permission.tool_call.fields.title,"options":permission.options.iter().map(|option|json!({"id":option.option_id.to_string(),"label":option.name,"effect":option.kind})).collect::<Vec<_>>()}));
@@ -215,7 +221,7 @@ async fn session_worker(
                     }
                 }
             }
-            let status=state(run.run().status());
+            let status=if failure.is_some() { "unknown" } else { state(run.run().status()) };
             drop(run);
             if output.stop.is_cancelled() { break; }
             output.emit(json!({"event":"run_finished","stream":request.id,"session_id":session_id,"run_id":run_id,"status":status,"reason":reason,"recording_error":failure}));
@@ -244,18 +250,10 @@ fn main() {
     let writer_stop = stop.clone();
     let writer_failed = failed.clone();
     let writer = std::thread::spawn(move || {
-        let mut stdout = std::io::stdout().lock();
-        for value in receiver {
-            let line = value.to_string();
-            if line.len() > MAX_LINE
-                || writeln!(stdout, "{line}")
-                    .and_then(|_| stdout.flush())
-                    .is_err()
-            {
-                writer_failed.store(true, Ordering::SeqCst);
-                writer_stop.cancel();
-                break;
-            }
+        if let Err(error) = output::write_frames(receiver, &writer_stop) {
+            eprintln!("host output failed: {error}");
+            writer_failed.store(true, Ordering::SeqCst);
+            writer_stop.cancel();
         }
     });
     let (input_tx, input_rx) = mpsc::sync_channel::<Vec<u8>>(32);

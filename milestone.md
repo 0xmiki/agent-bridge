@@ -26,13 +26,17 @@ objects in application code. Acceptance: [quality gates 1–3](docs/quality-gate
 - [x] Add Linux CI for Rust checks and host tests/typechecking.
 - [x] Record real OpenCode and Codex host checks ([evidence](host/verification.md)).
 - [x] Failed-startup recovery test.
-- [ ] EOF/disconnect and descendant cleanup tests.
+- [x] Linux EOF/disconnect/stalled-reader and descendant cleanup tests with deadlines.
+- [x] Distinct interleaved streams, retained fixture context, and exact reopened history.
+- [x] Reject foreign/stale/invalid/duplicate permission responses without consuming valid requests.
+- [x] Explicit SQLite lock failure, independent-database session progress, and no automatic retry.
 - [ ] Typed projections and snapshot/change cursors, including updates to old records.
-- [ ] Storage-stall and slow-consumer isolation with cancellation deadlines.
+- [ ] Arbitrary storage stalls, shared-database contention policy, and independent subscriber isolation.
 - [ ] Document equivalent Rust usage and the settled error/ownership contract.
 
-Next slice: durable change queries and host state projection, then storage/output
-fault isolation. Reorder if fault tests reveal a more fundamental constraint.
+Next slice: durable change queries and host state projection. Fault tests exposed and
+fixed unbounded stdout writes, long lock waits, and colliding permission tokens. The
+new bounded failure policies do not replace the remaining storage/recovery work.
 
 ## H2 — Application interactions (planned)
 

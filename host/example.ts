@@ -1,4 +1,5 @@
-import { BridgeHost } from "./client";
+import { BridgeHost, type StoredRecord } from "./client";
+import assert from "node:assert/strict";
 import { resolve } from "node:path";
 
 const [database, workspace, executable, ...args] = process.argv.slice(2);
@@ -6,29 +7,68 @@ if (!database || !workspace || !executable) throw new Error("bun host/example.ts
 const binary = process.env.AGENT_BRIDGE_HOST ?? resolve(import.meta.dir, "../target/debug/agent-bridge-host");
 const host = new BridgeHost(binary);
 let sessionId = "";
+let snapshot: StoredRecord[] = [];
+const phrase = `violet lighthouse ${crypto.randomUUID()}`;
 try {
   const session = await host.createSession({ database: resolve(database), workspace: resolve(workspace), executable, args }); sessionId = session.id;
   let turn = 0;
-  for (const prompt of ["Remember the phrase violet lighthouse. Reply only remembered. Do not use tools.", "What phrase did I ask you to remember? Reply only the phrase. Do not use tools."]) {
+  for (const prompt of [`Remember the phrase ${phrase}. Reply only remembered. Do not use tools.`, "What phrase did I ask you to remember? Reply only the phrase. Do not use tools."]) {
     const run = session.run(prompt);
     let answer = "";
+    let terminals = 0;
     for await (const event of run.events) {
       if (event.event === "text_delta") { answer += event.text; process.stdout.write(event.text); }
       if (event.event === "permission") await run.respond(event.permission_id, null);
+      if (event.event === "run_finished") terminals++;
     }
-    console.log("\n", (await run.completed).status);
-    if (++turn === 2 && !answer.toLowerCase().includes("violet lighthouse")) throw new Error("second turn did not preserve the phrase");
+    const finish = await run.completed;
+    assert.equal(terminals, 1);
+    assert.equal(finish.status, "completed");
+    assert.equal(finish.recording_error, null);
+    console.log("\n", finish.status);
+    if (++turn === 2) assert.ok(answer.includes(phrase), "second turn did not preserve the unique phrase");
+    const messages = (await session.history()).records.filter(record => record.run_id === finish.run_id && record.payload.type === "message");
+    const savedText = (actor: string, kind: string) => messages.filter(record => record.actor === actor && (record.payload.data as { kind: string }).kind === kind).map(record => {
+      const data = record.payload.data as { message: { content: { type: string; data: string }[] } };
+      return data.message.content.filter(part => part.type === "text").map(part => part.data).join("");
+    }).join("");
+    assert.equal(savedText("user", "user"), prompt);
+    assert.equal(savedText("assistant", "agent"), answer);
   }
   const cancelled = session.run("List the integers from 1 to 1000, one per line. Do not use tools.");
   let requested = false;
+  let racedWithCompletion = false;
+  let terminals = 0;
   for await (const event of cancelled.events) {
-    if (event.event === "text_delta" && !requested) { requested = true; await cancelled.cancel().catch(() => {}); }
+    if (event.event === "text_delta" && !requested) {
+      requested = true;
+      try { await cancelled.cancel(); }
+      catch (error) {
+        if (!["not_running", "stale_run"].includes((error as { code: string }).code)) throw error;
+        racedWithCompletion = true;
+      }
+    }
     if (event.event === "permission") await cancelled.respond(event.permission_id, null);
+    if (event.event === "run_finished") terminals++;
   }
   const ended = await cancelled.completed;
-  if (ended.recording_error || !["completed", "cancelled"].includes(ended.status)) throw new Error("third turn did not settle normally");
+  assert.ok(requested, "no cancellation was attempted");
+  assert.equal(terminals, 1);
+  assert.equal(ended.recording_error, null);
+  assert.ok(["completed", "cancelled"].includes(ended.status));
+  if (racedWithCompletion) assert.equal(ended.status, "completed");
   console.log("Cancellation race outcome:", ended.status);
+  snapshot = (await session.history()).records;
+  assert.ok(snapshot.every(record => record.session_id === session.id && (
+    record.state === "complete" ||
+    (record.state === "interrupted" && record.run_id === ended.run_id && ended.status === "cancelled")
+  )), "only the cancelled run may contain interrupted records; none may remain open");
+  assert.equal(snapshot.filter(record => record.payload.type === "run_finished").length, 3);
 } finally { await host.close(); }
 const reopened = new BridgeHost(binary);
-try { console.log("Saved records:", (await reopened.history(resolve(database), sessionId)).records.length); }
+try {
+  const records = (await reopened.history(resolve(database), sessionId)).records;
+  assert.deepEqual(records, snapshot);
+  console.log("Verified reopened records:", records.length);
+}
 finally { await reopened.close(); }

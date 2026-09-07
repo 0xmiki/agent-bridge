@@ -71,10 +71,20 @@ history reads, and 1,000 records per page. The client permits 64 pending request
 uses a 45-second response timeout, and bounds each run stream to 128 events.
 Overflow fails explicitly; these are development limits, not a production QoS promise.
 
-Normal shutdown cancels workers and joins owned processes. Separate workers contain
-some failures but synchronous SQLite work can still delay that session's cancellation.
-A raw client that stops reading stdout can block the writer. Shutdown under storage
-and output stalls needs fault tests and implementation work.
+Normal shutdown cancels workers and joins owned processes. The host waits at most
+100 ms per SQLite busy-handler operation, then reports lock contention explicitly.
+Recording failure yields `status: "unknown"` with `recording_error`; it retires that
+native session and does not replay the prompt. A held lock may also prevent saving
+the failure itself. Applications must not infer completion from missing records.
+The default Rust store still waits five seconds; callers can choose
+`SqliteStore::open_with_busy_timeout`. These budgets do not bound disk I/O or mutex waits.
+
+Unix stdout writes are nonblocking with a one-second frame deadline. A disconnected
+or stalled consumer causes host shutdown and nonzero exit; queued output may be lost.
+Linux tests check host, provider, and descendant exit within five seconds, including
+EOF under pressure and a stalled consumer that keeps stdin open. This is a whole-host
+failure policy, not independent subscriptions. Non-Unix pipes and arbitrary disk
+stalls still need implementation and verification before wider support claims.
 
 History pagination orders record creation, not subsequent changes. Reopening history
 does not reconnect a native session or recover uncertain work. Tools, structured
@@ -82,7 +92,9 @@ questions, context policies, restoration, and child execution currently have Rus
 APIs but are not exposed by this host. Session diagnostics and typed state projections
 also need a fuller client contract.
 
-The fixture suite covers concurrent sessions, continuation, cancellation, permissions,
-active process close, failed-startup recovery, history reopen, and malformed/versioned requests. Every future
+The fixture suite forces distinct streams to interleave and retain their own context,
+compares exact history after restart, tests permission rejection without consuming valid
+requests, and exercises SQLite locks and consumer faults. It also covers cancellation,
+active process close, failed startup, and malformed/versioned requests. Every future
 application-facing feature should gain a host acceptance case alongside focused Rust
 tests. See the [roadmap](../milestone.md) and [quality gates](../docs/quality-gates.md).

@@ -6,13 +6,17 @@ use std::{
 
 fn main() {
     let mode = std::env::args().nth(1).expect("fixture mode");
+    if mode == "host-consumer" {
+        consume_host();
+        return;
+    }
     if let Ok(path) = std::env::var("BRIDGE_TEST_PID") {
         std::fs::write(path, std::process::id().to_string()).unwrap();
     }
     if let Ok(path) = std::env::var("BRIDGE_TEST_ARGUMENT") {
         std::fs::write(path, std::env::args().nth(2).unwrap()).unwrap();
     }
-    let _descendant = if mode == "tree" {
+    let _descendant = if mode == "tree" || mode.starts_with("host-tree-") {
         Some(
             std::process::Command::new(std::env::current_exe().unwrap())
                 .arg("silent")
@@ -92,6 +96,7 @@ fn main() {
     .contains(&mode.as_str())
         || mode.starts_with("config")
         || mode.starts_with("json-")
+        || mode.starts_with("host-")
     {
         serve_sessions(&mode, &mut input);
     } else {
@@ -117,6 +122,43 @@ fn scalar<'a>(message: &'a str, key: &str) -> &'a str {
     tail.split([',', '}']).next().unwrap().trim()
 }
 
+// Unlike a JS stream, this consumer does no background pipe draining after the
+// first delta. It lets host tests create a genuinely blocked stdout writer.
+fn consume_host() {
+    use std::process::{Command, Stdio};
+    let args: Vec<_> = std::env::args().collect();
+    let mut host = Command::new(&args[2]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    std::fs::write(std::env::var("BRIDGE_TEST_HOST_PID").unwrap(), host.id().to_string()).unwrap();
+    let mut output = io::BufReader::new(host.stdout.take().unwrap());
+    let executable = std::env::current_exe().unwrap();
+    let mode = std::env::var("BRIDGE_TEST_PROVIDER_MODE").unwrap();
+    writeln!(host.stdin.as_mut().unwrap(), r#"{{"version":1,"id":"create","method":"create_session","params":{{"database":"{}","workspace":"{}","executable":"{}","args":["{mode}"]}}}}"#, args[3], args[4], executable.display()).unwrap();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(output.read_line(&mut line).unwrap() > 0);
+        if line.contains(r#""id":"create""#) { break; }
+    }
+    assert!(line.contains(r#""ok":true"#), "{line}");
+    let session = scalar(&line, "session_id");
+    writeln!(host.stdin.as_mut().unwrap(), r#"{{"version":1,"id":"run","method":"run","params":{{"session_id":{session},"prompt":"wait"}}}}"#).unwrap();
+    loop {
+        line.clear();
+        assert!(output.read_line(&mut line).unwrap() > 0);
+        if line.contains(r#""event":"text_delta""#) { break; }
+    }
+    std::fs::write(std::env::var("BRIDGE_TEST_CONSUMER_READY").unwrap(), "ready").unwrap();
+    line.clear();
+    io::stdin().read_line(&mut line).unwrap();
+    if line.trim() == "eof" { drop(host.stdin.take()); }
+    if line.trim() == "close" { drop(output); }
+    // Child::wait closes its own stdin handle. Keep it outside Child so the
+    // stalled-output case tests the writer deadline independently of EOF.
+    let _keep_input_open = host.stdin.take();
+    let status = host.wait().unwrap();
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn reply(id: &str, result: &str) {
     println!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}");
     io::stdout().flush().unwrap();
@@ -136,6 +178,8 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
     let mut permissions: HashMap<String, String> = HashMap::new();
     let mut count = 0;
     let mut settings: HashMap<String, (String, bool)> = HashMap::new();
+    let mut remembered = String::new();
+    let mut turn = 0;
     loop {
         let mut line = String::new();
         if input.read_line(&mut line).unwrap() == 0 {
@@ -230,6 +274,40 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
         } else if line.contains("\"method\":\"session/prompt\"") {
             let session = scalar(&line, "sessionId");
             let id = scalar(&line, "id");
+            if mode == "host-state" {
+                if turn == 0 {
+                    remembered = scalar(&line, "text").trim_matches('"').to_owned();
+                    assert!(remembered.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+                }
+                let suffix = if turn == 0 { ":first" } else { ":recall" };
+                for (chunk, text) in [remembered.as_str(), suffix].into_iter().enumerate() {
+                    if let Ok(gate) = std::env::var("BRIDGE_TEST_GATE") {
+                        std::fs::write(format!("{gate}.ready-{turn}-{chunk}"), "ready").unwrap();
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        while !std::path::Path::new(&format!("{gate}.go-{turn}-{chunk}")).exists() {
+                            assert!(std::time::Instant::now() < deadline, "fixture gate timed out");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                    update(session, &format!(r#"{{"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{{"type":"text","text":"{text}"}}}}"#));
+                }
+                turn += 1;
+                reply(id, r#"{"stopReason":"end_turn"}"#);
+                continue;
+            }
+            if mode == "host-tree-flood" || mode == "host-tree-burst" {
+                let text = "x".repeat(8192);
+                let chunks = if mode == "host-tree-burst" { 40 } else { 512 };
+                for index in 0..chunks {
+                    update(session, &format!(r#"{{"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{{"type":"text","text":"{text}"}}}}"#));
+                    if index == 32 {
+                        std::fs::write(std::env::var("BRIDGE_TEST_STREAMING").unwrap(), "streaming").unwrap();
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                pending.insert(session.to_owned(), (id.to_owned(), 0, false));
+                continue;
+            }
             if mode == "prompt-crash" {
                 std::process::exit(11);
             }
@@ -297,7 +375,7 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                     );
                     io::stdout().flush().unwrap();
                 }
-            } else if mode == "cancel" {
+            } else if mode == "cancel" || mode == "host-tree-cancel" {
                 pending.insert(session.to_owned(), (id.to_owned(), 0, false));
             } else {
                 update(

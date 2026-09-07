@@ -23,8 +23,12 @@ without creating a file.
 
 Opening a path creates the database if absent. Its parent directory must exist.
 Clones share one connection; separate handles can open the same file. Operations
-are synchronous and may wait up to five seconds for a write lock, so keep them off
-UI threads and account for blocking in async hosts. Lock contention returns `Busy`.
+are synchronous and by default wait up to five seconds for a write lock, so keep them
+off UI threads and account for blocking in async hosts. Lock contention returns `Busy`.
+`SqliteStore::open_with_busy_timeout(path, Duration::from_millis(100))` lets an owner
+choose a shorter wait, including during migrations. This bounds SQLite busy-handler
+waits per operation, not filesystem I/O or mutex waits. The experimental host uses
+100 ms and reports recording failure explicitly; it does not retry uncertain runs.
 
 ## Schema version 6
 

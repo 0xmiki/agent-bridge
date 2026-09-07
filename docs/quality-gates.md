@@ -13,9 +13,11 @@ sustained consumer, release, upgrade, and provider-change evidence.
 - Cancel, EOF, close, and consumer disconnect clean up owned processes and descendants.
 - Each advertised provider completes a real host prompt; consumers implement no ACP parser.
 
-Initial host tests cover concurrent sessions, repeat turns, correlation, cancellation,
-permissions, normal active-process close, failed-startup recovery, malformed input,
-and version rejection. EOF/disconnect/descendant coverage remains incomplete.
+Host fixtures force distinct streams to interleave and recall their own prior values.
+Tests verify event IDs, ordering, one terminal outcome, cancellation, permissions,
+failed-startup recovery, malformed input, and version rejection. Linux fault tests
+cover stdin EOF, stdout disconnect, and stalled readers, with host/provider/descendant
+exit checked within five seconds. Abrupt host death and other OSes remain open.
 
 ## 2. Application state and storage
 
@@ -25,7 +27,9 @@ and version rejection. EOF/disconnect/descendant coverage remains incomplete.
   documented behavior.
 - Bridge-owned receipts have typed readers; applications do not interpret extension JSON.
 
-History reopen is tested. Creation-sequence pagination is not a change cursor.
+History tests compare content, attribution, terminal records, and exact snapshots
+including IDs/revisions after reopen, through full and paginated reads.
+Creation-sequence pagination is not a change cursor.
 Subscriptions, update cursors, and typed client projections remain open.
 
 ## 3. Runtime isolation
@@ -35,8 +39,18 @@ Subscriptions, update cursors, and typed client projections remain open.
 - Overflow and recording failures are explicit and do not silently corrupt another session.
 - A client that stops reading cannot indefinitely prevent shutdown.
 
-The host uses separate session workers and bounded queues. Core recording is still
-synchronous, so isolation and shutdown under these faults are not established.
+An external SQLite write lock now produces an explicit unknown run outcome with a
+recording error. A session using another database still starts and cancels within
+two-second deadlines. Releasing the lock does not replay the failed run. The host
+uses a 100 ms SQLite busy wait per operation; the default Rust store retains five
+seconds. Neither setting bounds filesystem I/O or mutex waits.
+
+On Unix, output uses nonblocking writes with a one-second frame deadline. Tests cover
+a stalled reader with stdin kept open, disconnect, and EOF under output pressure.
+Output failure stops the entire owned host and exits nonzero. This establishes a
+bounded failure path, not per-subscriber isolation or lossless backpressure. Arbitrary
+disk stalls, shared-database contention policy, and richer cancellation guarantees
+remain open.
 
 ## 4. Application interactions
 
@@ -45,7 +59,9 @@ synchronous, so isolation and shutdown under these faults are not established.
 - Cancellation reaches application handlers; duplicate decisions have one outcome.
 - Exercise a real application tool per supported provider through the host.
 
-Rust tool/question/grant APIs exist. Host permission routing is tested. Host tools,
+Rust tool/question/grant APIs exist. Host tests reject foreign permission tokens,
+stale run IDs, invalid options, and duplicate responses while preserving valid pending
+requests. Tokens are unique across the host. Host tools,
 questions, and automatic binding remain to be implemented.
 
 ## 5. Restart and uncertainty

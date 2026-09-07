@@ -26,7 +26,7 @@ const RECORD_COLUMNS: &str = "id, session_id, run_id, sequence, actor_id, reply_
 /// Local SQLite records with transactional mutation and versioned JSON payloads.
 ///
 /// Clones share one connection. Separate stores can open the same file. Methods
-/// block and can wait up to five seconds for a write lock; keep them off UI threads.
+/// block and by default wait up to five seconds for a write lock; keep them off UI threads.
 /// This persists records, not provider processes or external execution guarantees.
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -38,17 +38,33 @@ impl SqliteStore {
     /// Only the reserved `agent_bridge_*` tables are migrated; application tables
     /// and the database-wide `user_version` and journal mode are left alone.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        Self::initialize(Connection::open(path).map_err(database_error)?)
+        Self::open_with_busy_timeout(path, Duration::from_secs(5))
+    }
+
+    /// Open with an explicit SQLite lock-wait budget, including migrations.
+    /// This bounds busy-handler waits per operation, not filesystem I/O or mutex waits.
+    /// Short budgets trade lock tolerance for explicit `StoreError::Busy` failures.
+    pub fn open_with_busy_timeout(
+        path: impl AsRef<Path>,
+        busy_timeout: Duration,
+    ) -> Result<Self, StoreError> {
+        Self::initialize(
+            Connection::open(path).map_err(database_error)?,
+            busy_timeout,
+        )
     }
 
     /// SQLite-backed ephemeral storage, useful for running the same contract tests.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::initialize(Connection::open_in_memory().map_err(database_error)?)
+        Self::initialize(
+            Connection::open_in_memory().map_err(database_error)?,
+            Duration::from_secs(5),
+        )
     }
 
-    fn initialize(mut connection: Connection) -> Result<Self, StoreError> {
+    fn initialize(mut connection: Connection, busy_timeout: Duration) -> Result<Self, StoreError> {
         connection
-            .busy_timeout(Duration::from_secs(5))
+            .busy_timeout(busy_timeout)
             .map_err(database_error)?;
         connection
             .pragma_update(None, "foreign_keys", true)
