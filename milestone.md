@@ -33,13 +33,15 @@ objects in application code. Acceptance: [quality gates 1–3](docs/quality-gate
 - [x] SQLite snapshot/change cursors, old-record updates, and initial typed client projections.
 - [ ] Extend typed readers to bridge-owned receipts and settle the public projection API.
 - [x] Shared-database contention policy: separate read-only queries, DELETE/WAL concurrency tests, bounded explicit lock failures.
-- [ ] Arbitrary storage stalls and independent subscriber isolation.
+- [x] Bounded storage workers: controlled stall, cancellation/cleanup, late-write uncertainty, capacity, and panic tests.
+- [ ] Independent subscriber isolation.
 - [ ] Document equivalent Rust usage and the settled error/ownership contract.
 
-Next slice: remaining runtime isolation, especially storage operations that do not
-return within a SQLite busy timeout. Shared-database reads now avoid migration write
-locks; three concurrent sessions and readers pass DELETE/WAL tests. This does not
-establish disk-stall isolation or writer fairness under sustained load.
+Next slice: independent subscriber isolation. The host now has an outer storage wait
+budget, separate from SQLite lock waits, with explicit uncertainty and bounded worker
+capacity. [Controlled fault tests](docs/runtime-isolation.md) cover stalled operations;
+actual kernel I/O failure and OS termination evidence remain release work. This is a
+bounded failure contract, not a promise that an in-progress write can be cancelled.
 The first [state synchronization contract](docs/state-sync.md) is implemented with
 coalesced record changes rather than a transcript-revision log. Fault tests exposed and
 fixed unbounded stdout writes, long lock waits, and colliding permission tokens. The

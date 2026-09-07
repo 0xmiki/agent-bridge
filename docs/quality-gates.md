@@ -53,7 +53,7 @@ On Unix, output uses nonblocking writes with a one-second frame deadline. Tests 
 a stalled reader with stdin kept open, disconnect, and EOF under output pressure.
 Output failure stops the entire owned host and exits nonzero. This establishes a
 bounded failure path, not per-subscriber isolation or lossless backpressure. Arbitrary
-disk stalls and richer cancellation guarantees remain open.
+kernel-level I/O failures and richer cancellation guarantees remain open.
 
 Shared-database tests now exercise three sessions, interleaved output, simultaneous
 projection refreshes, and exact state after reconnect in DELETE and WAL modes.
@@ -62,6 +62,14 @@ An external reserved writer lock permits reads of committed state; an exclusive
 lock fails a refresh within the deadline, preserving the previous client checkpoint
 and host responsiveness. The explicit policy is bounded lock waits and reported
 failure, without automatic run retries or a sustained-load fairness claim.
+
+The host now bounds waits on storage workers separately from SQLite's busy timeout.
+Controlled blocking-store tests verify cancellation and provider-tree cleanup before
+the write returns, then verify that the delayed write can still commit. Initialization
+and read timeouts retain actual worker capacity; panics retire handles; queued writes
+do not start after timeout. The pool is capped at twelve workers. See
+[runtime isolation](runtime-isolation.md) for the exact limits. This does not claim
+force-cancellation of OS I/O or complete independent-subscriber isolation.
 
 ## 4. Application interactions
 

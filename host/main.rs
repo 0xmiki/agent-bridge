@@ -1,5 +1,6 @@
 //! Experimental owned ACP host. Stdout is exclusively protocol v1 JSON-lines.
 mod output;
+mod storage;
 use agent_bridge::acp::{
     AcpConnection, AcpEvent, AcpLaunch, ContentBlock, RecordActors, SessionUpdate,
 };
@@ -181,6 +182,7 @@ async fn session_worker(
     session_id: String,
     mut commands: tokio::sync::mpsc::Receiver<Request>,
     output: Output,
+    storage_budget: storage::Budget,
 ) {
     let setup = async {
         if !std::path::Path::new(&open.database).is_absolute()
@@ -191,7 +193,7 @@ async fn session_worker(
                 "database/workspace must be absolute paths and executable must be nonempty".into(),
             );
         }
-        let store = SqliteStore::open_with_busy_timeout(&open.database, STORAGE_LOCK_WAIT)
+        let store = storage::Store::open(open.database.clone().into(), &storage_budget)
             .map_err(|e| e.to_string())?;
         let mut launch = AcpLaunch::new(open.executable);
         for argument in open.args {
@@ -291,6 +293,7 @@ async fn session_worker(
 }
 
 fn main() {
+    let storage_budget = storage::Budget::new(12);
     let stop = CancellationToken::new();
     let failed = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::sync_channel::<Value>(128);
@@ -390,6 +393,7 @@ fn main() {
                 let id = identity("session");
                 let worker_id = id.clone();
                 let worker_output = output.clone();
+                let budget = storage_budget.clone();
                 let (tx, rx) = tokio::sync::mpsc::channel(16);
                 sessions.insert(id, tx);
                 workers.push(std::thread::spawn(move || {
@@ -404,6 +408,7 @@ fn main() {
                         worker_id,
                         rx,
                         worker_output,
+                        budget,
                     ));
                 }));
             }
@@ -419,6 +424,7 @@ fn main() {
                 reads.fetch_add(1, Ordering::SeqCst);
                 let reads = reads.clone();
                 let output = output.clone();
+                let budget = storage_budget.clone();
                 workers.push(std::thread::spawn(move || {
                     struct Permit(Arc<std::sync::atomic::AtomicUsize>);
                     impl Drop for Permit {
@@ -426,10 +432,18 @@ fn main() {
                             self.0.fetch_sub(1, Ordering::SeqCst);
                         }
                     }
-                    let _permit = Permit(reads);
-                    match history(&request) {
-                        Ok(value) => output.ok(&request.id, value),
-                        Err(error) => output.error(&request.id, "history_failed", error),
+                    let permit = Permit(reads);
+                    let id = request.id.clone();
+                    let result = budget
+                        .execute(move || {
+                            let _permit = permit;
+                            history(&request).map_err(|error| error.to_string())
+                        })
+                        .map_err(|error| error.to_string())
+                        .and_then(|value| value);
+                    match result {
+                        Ok(value) => output.ok(&id, value),
+                        Err(error) => output.error(&id, "history_failed", error),
                     }
                 }));
             }

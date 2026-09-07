@@ -217,7 +217,16 @@ pub enum StoreError {
     InvalidPageSize,
     InvalidChangeCursor,
     ReadOnly,
-    SchemaMigrationRequired { found: i64, expected: i64 },
+    /// The caller stopped waiting; an in-progress mutation may still commit.
+    StorageTimedOut,
+    /// The storage worker or handle is no longer usable.
+    StorageUnavailable,
+    /// Work was not admitted because a bounded queue or worker budget was full.
+    StorageOverloaded,
+    SchemaMigrationRequired {
+        found: i64,
+        expected: i64,
+    },
     SequenceExhausted,
     Poisoned,
     Busy,

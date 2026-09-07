@@ -112,3 +112,29 @@ independent writers.
 This policy bounds SQLite lock waits and reports failures. It does not establish
 arbitrary disk-stall isolation, independent slow subscribers, or writer fairness
 under sustained load. No provider-specific behavior changed in this increment.
+
+## Storage worker deadlines, September 8
+
+185 Rust tests, including five new worker-fault tests, and seventeen Bun host tests
+with 290 assertions passed. Clippy, rustfmt, default-feature-free compilation, and
+TypeScript checking also passed. This increment used fixtures, not live Codex threads.
+
+The controlled blocking-store test holds an agent-message write beyond the 500 ms
+caller deadline. The run reports a storage timeout, its handle is retired, cancellation
+reaches the ACP fixture, and the provider plus its descendant exit before storage is
+released. Another storage worker remains usable. Releasing the blocked operation
+afterward produces the late record, without a fabricated completion or prompt replay.
+
+Additional tests cover a blocked read retaining its budget slot, blocked initialization
+rejecting replacement workers at capacity, storage panic cleanup, and discarding work
+that timed out while waiting for its database writer gate.
+
+The initial threading change exposed a shared-WAL start failure under concurrent
+writes. Host operations using the same configured database path are now serialized
+inside storage workers; both shared DELETE/WAL acceptance tests pass. Read-only
+requests remain separate. External writers and path aliases still follow SQLite's
+bounded contention policy.
+
+The fault store models a blocked synchronous operation; it does not simulate a kernel
+in uninterruptible I/O. No claim is made that threads or in-progress writes can be
+force-cancelled. See [runtime isolation](../docs/runtime-isolation.md).

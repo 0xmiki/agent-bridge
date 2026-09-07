@@ -82,13 +82,22 @@ history reads, and 1,000 records per page. The client permits 64 pending request
 uses a 45-second response timeout, and bounds each run stream to 128 events.
 Overflow fails explicitly; these are development limits, not a production QoS promise.
 
+Storage runs behind a [bounded worker boundary](../docs/runtime-isolation.md): twelve
+actual storage workers total, one queued job per session's store, and a 500 ms wait
+budget for opening, each record operation, or a read query. Timed-out work retains
+its worker slot until it actually finishes. Host writes to the same configured
+absolute database path are serialized; other processes and path aliases still use
+SQLite's contention behavior.
+
 Normal shutdown cancels workers and joins owned processes. The host waits at most
 100 ms per SQLite busy-handler operation, then reports lock contention explicitly.
 Recording failure yields `status: "unknown"` with `recording_error`; it retires that
 native session and does not replay the prompt. A held lock may also prevent saving
 the failure itself. Applications must not infer completion from missing records.
 The default Rust store still waits five seconds; callers can choose
-`SqliteStore::open_with_busy_timeout`. These budgets do not bound disk I/O or mutex waits.
+`SqliteStore::open_with_busy_timeout`. SQLite's budget does not bound disk I/O or mutex
+waits. The host's outer deadline limits caller waiting, but an already-started write
+may commit later. `StorageTimedOut` retires the handle; it is not proof of rollback.
 
 `history`, `snapshot`, and `changes` use separate read-only connections and require
 an existing, current-schema database. They neither create nor migrate a database.
@@ -101,8 +110,9 @@ Unix stdout writes are nonblocking with a one-second frame deadline. A disconnec
 or stalled consumer causes host shutdown and nonzero exit; queued output may be lost.
 Linux tests check host, provider, and descendant exit within five seconds, including
 EOF under pressure and a stalled consumer that keeps stdin open. This is a whole-host
-failure policy, not independent subscriptions. Non-Unix pipes and arbitrary disk
-stalls still need implementation and verification before wider support claims.
+failure policy, not independent subscriptions. Controlled storage-stall tests verify
+provider cleanup without waiting for storage to return. Non-Unix pipes and actual
+kernel-level I/O failures still need platform verification before wider claims.
 
 History pagination orders record creation; `snapshot` and `changes` support record
 updates and reconnecting projections. Reopening history
