@@ -57,6 +57,10 @@ overlapping sync calls and limits one synchronization to 1,000 pages. Applicatio
 choose when to poll and can use the page API directly for larger datasets. No
 background subscriber queue grows while the UI is disconnected.
 
+If a live [run observer](subscriptions.md) lags, synchronize this saved state and
+attach a new observer. Use `run.pendingPermissions()` for current interaction tokens;
+portable history does not itself recreate live permission handles.
+
 The initial typed readers expose message roles/text, tool titles/statuses, permission
 options, failures, and completion reasons. Raw records retain resources, decisions,
 questions, extensions, and receipt details. More typed receipt readers and independent

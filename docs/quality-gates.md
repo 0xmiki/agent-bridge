@@ -69,7 +69,14 @@ the write returns, then verify that the delayed write can still commit. Initiali
 and read timeouts retain actual worker capacity; panics retire handles; queued writes
 do not start after timeout. The pool is capped at twelve workers. See
 [runtime isolation](runtime-isolation.md) for the exact limits. This does not claim
-force-cancellation of OS I/O or complete independent-subscriber isolation.
+force-cancellation of OS I/O.
+
+Independent Bun run observers now have bounded event/byte queues. A lagged observer
+fails locally while the wire keeps draining and other observers/runs continue. Tests
+verify all fast-observer events, saved-state recovery, bounded admission, unsubscribe,
+immutable permission options, and reattaching to a pending permission without replay.
+The [subscription contract](subscriptions.md) distinguishes this from failure of the
+shared transport or fairness between provider output streams.
 
 ## 4. Application interactions
 

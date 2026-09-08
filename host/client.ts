@@ -7,46 +7,108 @@ export interface HistoryPage { records: StoredRecord[]; next_after: string | nul
 export interface ChangeCursor { epoch: string; session_id: string; position: string }
 export interface StatePage extends HistoryPage { cursor: ChangeCursor }
 function startHost(binary: string) { return spawn([binary], { stdin: "pipe", stdout: "pipe", stderr: "inherit" }); }
-export type RunEvent =
+export type RunEvent = Readonly<
   | { event: "text_delta"; session_id: string; run_id: string; text: string }
-  | { event: "permission"; session_id: string; run_id: string; permission_id: string; title: string | null; options: { id: string; label: string; effect: string }[] }
-  | { event: "run_finished"; session_id: string; run_id: string; status: string; reason: string | null; recording_error: string | null };
+  | { event: "permission"; session_id: string; run_id: string; permission_id: string; title: string | null; options: readonly Readonly<{ id: string; label: string; effect: string }>[] }
+  | { event: "run_finished"; session_id: string; run_id: string; status: string; reason: string | null; recording_error: string | null }>;
+export interface SubscriptionOptions { maxEvents?: number; maxBytes?: number }
+export interface RunSubscription extends AsyncIterable<RunEvent> { close(): void }
+export class SubscriptionLaggedError extends Error {
+  readonly code = "subscriber_lagged";
+  constructor() { super("run subscriber exceeded its buffer; refresh saved state to recover"); this.name = "SubscriptionLaggedError"; }
+}
 type Finish = Extract<RunEvent, { event: "run_finished" }>;
+export type PendingPermission = Extract<RunEvent, { event: "permission" }>;
+function freezeEvent(event: RunEvent) {
+  if (event.event === "permission") { event.options.forEach(Object.freeze); Object.freeze(event.options); }
+  return Object.freeze(event);
+}
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; }
 
 class Events<T> implements AsyncIterable<T> {
-  private items: T[] = [];
+  private items: {value:T; bytes:number}[] = [];
+  private bytes = 0;
   private waiter?: ReturnType<typeof deferred<IteratorResult<T>>>;
   private done = false;
   private error?: Error;
   private claimed = false;
-  push(value: T) {
+  private maxEvents: number;
+  private maxBytes: number;
+  constructor(private onClosed: () => void, options: SubscriptionOptions = {}) {
+    this.maxEvents = options.maxEvents ?? 128;
+    this.maxBytes = options.maxBytes ?? 1024 * 1024;
+    if (!Number.isInteger(this.maxEvents) || this.maxEvents < 1 || this.maxEvents > 128 || !Number.isInteger(this.maxBytes) || this.maxBytes < 1 || this.maxBytes > 1024 * 1024) throw new Error("invalid subscription limits");
+  }
+  push(value: T, bytes: number) {
     if (this.done) return;
     if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter.resolve({ value, done: false }); }
-    else { if (this.items.length >= 128) throw new Error("client event buffer exhausted"); this.items.push(value); }
+    else {
+      if (this.items.length >= this.maxEvents || this.bytes + bytes > this.maxBytes) { this.end(new SubscriptionLaggedError()); return; }
+      this.items.push({value,bytes}); this.bytes += bytes;
+    }
   }
-  end(error?: Error) { this.done = true; this.error = error; if (this.waiter) { if (error) this.waiter.reject(error); else this.waiter.resolve({ value: undefined as T, done: true }); this.waiter = undefined; } }
+  end(error?: Error) {
+    if (this.done) return;
+    this.done = true; this.error = error;
+    if (error) { this.items = []; this.bytes = 0; }
+    if (this.waiter) { if (error) this.waiter.reject(error); else this.waiter.resolve({ value: undefined as T, done: true }); this.waiter = undefined; }
+    this.onClosed();
+  }
+  close() { this.items = []; this.bytes = 0; this.end(); }
   [Symbol.asyncIterator](): AsyncIterator<T> { if (this.claimed) throw new Error("events have one consumer"); this.claimed = true; return { next: () => {
     if (this.error) return Promise.reject(this.error);
-    if (this.items.length) return Promise.resolve({ value: this.items.shift()!, done: false });
+    if (this.items.length) { const item = this.items.shift()!; this.bytes -= item.bytes; return Promise.resolve({ value: item.value, done: false }); }
     if (this.done) return Promise.resolve({ value: undefined as T, done: true });
     if (this.waiter) return Promise.reject(new Error("only one event consumer is supported"));
     this.waiter = deferred<IteratorResult<T>>(); return this.waiter.promise;
-  } }; }
+  }, return: async () => { this.close(); return {value:undefined as T, done:true}; } }; }
 }
 
 export class HostRun {
   private runId?: string;
-  private queue = new Events<RunEvent>();
-  readonly events: AsyncIterable<RunEvent> = this.queue;
+  private subscribers = new Set<Events<RunEvent>>();
+  readonly events: RunSubscription;
+  private terminal?: Finish;
+  private failure?: Error;
   private finished = deferred<Finish>();
   readonly completed = this.finished.promise;
-  constructor(private host: BridgeHost, readonly sessionId: string, readonly started: Promise<{ run_id: string }>) {}
+  constructor(private host: BridgeHost, readonly sessionId: string, readonly started: Promise<{ run_id: string }>) { this.events = this.subscribe(); }
+  /** Observe future events. The default events subscription starts with the run. */
+  subscribe(options: SubscriptionOptions = {}): RunSubscription {
+    if (this.subscribers.size >= 8) throw Object.assign(new Error("run subscriber limit reached"), {code:"subscriber_limit"});
+    const queue = new Events<RunEvent>(() => this.subscribers.delete(queue), options);
+    if (this.terminal) { queue.push(this.terminal, Buffer.byteLength(JSON.stringify(this.terminal))); queue.end(); }
+    else if (this.failure) queue.end(this.failure);
+    else this.subscribers.add(queue);
+    return queue;
+  }
   async cancel() { const { run_id } = await this.started; await this.host.request("cancel", { session_id: this.sessionId, run_id }); }
   async respond(permissionId: string, optionId: string | null) { const { run_id } = await this.started; await this.host.request("respond", { session_id: this.sessionId, run_id, permission_id: permissionId, option_id: optionId }); }
+  /** Current live requests, not persisted-history replay. Attach an observer before querying. */
+  async pendingPermissions(): Promise<readonly PendingPermission[]> {
+    const { run_id } = await this.started;
+    if (this.terminal) return [];
+    try {
+      const events: PendingPermission[] = await this.host.request("pending_permissions", {session_id:this.sessionId, run_id});
+      for (const event of events) {
+        if (event.event !== "permission" || event.session_id !== this.sessionId || event.run_id !== run_id) throw new Error("invalid pending permission");
+        freezeEvent(event);
+      }
+      return Object.freeze(events);
+    } catch (error) {
+      if (["not_running", "stale_run"].includes((error as {code:string}).code)) return [];
+      throw error;
+    }
+  }
   /** @internal */ bind(info: {run_id: string; session_id: string}) { if (typeof info.run_id !== "string" || info.session_id !== this.sessionId) throw new Error("invalid run acknowledgement"); this.runId = info.run_id; }
-  /** @internal */ accept(event: RunEvent) { if (!this.runId || event.run_id !== this.runId || event.session_id !== this.sessionId || !["text_delta", "permission", "run_finished"].includes(event.event)) throw new Error("invalid run event"); this.queue.push(event); if (event.event === "run_finished") { this.finished.resolve(event); this.queue.end(); } }
-  /** @internal */ fail(error: Error) { this.queue.end(error); this.finished.reject(error); }
+  /** @internal */ accept(event: RunEvent) {
+    if (!this.runId || event.run_id !== this.runId || event.session_id !== this.sessionId || !["text_delta", "permission", "run_finished"].includes(event.event)) throw new Error("invalid run event");
+    freezeEvent(event);
+    const bytes = Buffer.byteLength(JSON.stringify(event));
+    if (event.event === "run_finished") { this.terminal = event; this.finished.resolve(event); }
+    for (const queue of this.subscribers) { queue.push(event, bytes); if (this.terminal) queue.end(); }
+  }
+  /** @internal */ fail(error: Error) { this.failure = error; for (const queue of this.subscribers) queue.end(error); this.finished.reject(error); }
 }
 
 export class HostSession {

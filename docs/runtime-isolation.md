@@ -55,4 +55,5 @@ This is not a hard real-time guarantee. Kernel-level uninterruptible I/O, a stal
 allocator, whole-process scheduling failure, and platform-specific process termination
 are not simulated. Standard threads cannot safely be force-killed individually.
 OS failure testing remains release work; durable recovery remains H3. Independent
-slow-subscriber behavior is the next runtime feature to address.
+[Bun run observers](subscriptions.md) now have separate bounded queues. Shared
+transport failures and provider-output scheduling fairness remain separate concerns.

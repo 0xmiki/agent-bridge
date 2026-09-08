@@ -228,7 +228,7 @@ async fn session_worker(
                 user:ActorId::new("user").unwrap(),agent:ActorId::new("assistant").unwrap(),host:ActorId::new("host").unwrap(),
             }) { Ok(run)=>run,Err(error)=>{output.error(&request.id,"start_failed",error);continue;} };
             output.ok(&request.id,json!({"run_id":run_id,"session_id":session_id}));
-            let mut permissions: HashMap<String, agent_bridge::acp::PermissionId> = HashMap::new();
+            let mut permissions: HashMap<String, (agent_bridge::acp::PermissionId, Value)> = HashMap::new();
             let mut reason = None; let mut failure = None;
             loop {
                 tokio::select! {
@@ -239,11 +239,15 @@ async fn session_worker(
                         if command.method == "run" { output.error(&command.id,"session_busy","session already has an active run"); continue; }
                         if command.params["run_id"].as_str() != Some(run_id.as_str()) { output.error(&command.id,"stale_run","run ID is not active"); continue; }
                         match command.method.as_str() {
+                            "pending_permissions" => {
+                                permissions.retain(|_, (id, _)| run.permission_pending(id));
+                                output.ok(&command.id, json!(permissions.values().map(|(_, event)| event).collect::<Vec<_>>()));
+                            }
                             "cancel" => match run.cancel() { Ok(())=>output.ok(&command.id,json!({"cancellation_requested":true})),Err(error)=>output.error(&command.id,"cancel_failed",error) },
                             "respond" => {
                                 let result = (|| {
                                     let token=string(&command.params,"permission_id")?;
-                                    let permission=permissions.get(token).ok_or("permission is not pending")?;
+                                    let (permission, _)=permissions.get(token).ok_or("permission is not pending")?;
                                     let option=match command.params.get("option_id") { None|Some(Value::Null)=>None,Some(Value::String(value))=>Some(value.as_str()),_=>return Err("option_id must be a string or null") };
                                     run.respond(permission.clone(),option).map_err(|_|"permission response was rejected")?;
                                     permissions.remove(token); Ok::<_,&str>(())
@@ -259,9 +263,11 @@ async fn session_worker(
                         },
                         Ok(Some(AcpEvent::Permission {id,request:permission})) if run.permission_pending(&id) => {
                             let token=identity("permission");
-                            permissions.insert(token.clone(),id);
-                            output.emit(json!({"event":"permission","stream":request.id,"session_id":session_id,"run_id":run_id,"permission_id":token,
-                                "title":permission.tool_call.fields.title,"options":permission.options.iter().map(|option|json!({"id":option.option_id.to_string(),"label":option.name,"effect":option.kind})).collect::<Vec<_>>()}));
+                            let event=json!({"event":"permission","stream":request.id,"session_id":session_id,"run_id":run_id,"permission_id":token,
+                                "title":permission.tool_call.fields.title,"options":permission.options.iter().map(|option|json!({"id":option.option_id.to_string(),"label":option.name,"effect":option.kind})).collect::<Vec<_>>()});
+                            permissions.retain(|_, (id, _)| run.permission_pending(id));
+                            permissions.insert(token,(id,event.clone()));
+                            output.emit(event);
                         }
                         Ok(Some(AcpEvent::Finished(value))) => reason=Some(value),
                         Ok(Some(_))=>{}, Ok(None)=>break,
@@ -447,7 +453,7 @@ fn main() {
                     }
                 }));
             }
-            "run" | "cancel" | "respond" => {
+            "run" | "cancel" | "respond" | "pending_permissions" => {
                 let id = match string(&request.params, "session_id") {
                     Ok(id) => id,
                     Err(error) => {

@@ -44,7 +44,10 @@ try {
 }
 ```
 
-Drain a run's single-consumer event stream, or cancel it and drain the outcome.
+Each [run subscription](../docs/subscriptions.md) has one consumer. Use
+`run.subscribe()` for another observer; `close()` or breaking its loop detaches only
+that observer. Lag fails that subscription without cancelling the run or other
+observers. `run.completed` remains the execution outcome; use `run.cancel()` to stop work.
 Permission dismissal in this example is an application choice. Real applications
 can present the offered options. A cancellation acknowledgment records intent;
 the terminal event determines the outcome.
@@ -56,7 +59,7 @@ Requests contain `version`, `id`, `method`, and `params`. Responses carry the sa
 ID and either `ok: true, result` or `ok: false, error`. Events carry `event`;
 run events also carry the original request ID as `stream`, plus session/run IDs.
 
-Methods: `ping`, `create_session`, `run`, `cancel`, `respond`, `history`, `snapshot`,
+Methods: `ping`, `create_session`, `run`, `cancel`, `respond`, `pending_permissions`, `history`, `snapshot`,
 `changes`, `shutdown`.
 The host owns identifiers and permission routing. The client imports no ACP SDK.
 `client.ts` defines the current DTOs. Record sequence/revision and pagination cursors
@@ -79,7 +82,10 @@ Each session owns a worker, runtime, ACP process, and SQLite connection. One run
 active per session. Initial limits are eight sessions, sixteen queued commands per
 session, 128 output frames, 32 queued input frames, 1 MiB input frames, four concurrent
 history reads, and 1,000 records per page. The client permits 64 pending requests,
-uses a 45-second response timeout, and bounds each run stream to 128 events.
+uses a 45-second response timeout, and admits eight observers per run. Each has
+its own queue bounded by 128 events and 1 MiB of encoded event bytes. A lagged
+observer can refresh saved state and query `run.pendingPermissions()` for live
+requests it missed.
 Overflow fails explicitly; these are development limits, not a production QoS promise.
 
 Storage runs behind a [bounded worker boundary](../docs/runtime-isolation.md): twelve
@@ -110,7 +116,8 @@ Unix stdout writes are nonblocking with a one-second frame deadline. A disconnec
 or stalled consumer causes host shutdown and nonzero exit; queued output may be lost.
 Linux tests check host, provider, and descendant exit within five seconds, including
 EOF under pressure and a stalled consumer that keeps stdin open. This is a whole-host
-failure policy, not independent subscriptions. Controlled storage-stall tests verify
+failure policy for the shared transport. Individual Bun observer lag is isolated
+inside the client. Controlled storage-stall tests verify
 provider cleanup without waiting for storage to return. Non-Unix pipes and actual
 kernel-level I/O failures still need platform verification before wider claims.
 

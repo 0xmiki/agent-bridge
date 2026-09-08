@@ -138,3 +138,26 @@ bounded contention policy.
 The fault store models a blocked synchronous operation; it does not simulate a kernel
 in uninterruptible I/O. No claim is made that threads or in-progress writes can be
 force-cancelled. See [runtime isolation](../docs/runtime-isolation.md).
+
+## Independent run observers, September 8
+
+185 Rust tests, twenty-two Bun host tests with 659 assertions, Clippy, rustfmt,
+default-feature-free compilation, and TypeScript checking passed locally. The new
+checks use fixtures and create no Codex history threads.
+
+The first regression test failed against the previous client: an unread run filled
+its event queue, which threw through the shared wire reader and disconnected the
+client. Queues now fail only their own subscriber. The fixed test keeps another run
+active, verifies it can still cancel, and recovers the unread run's exact saved text.
+
+A gated fixture produces eight events before pausing, proving a small byte limit can
+fail independently of the 128-event limit. After release, a fast observer receives
+all 160 ordered chunks and one terminal event while slow observers fail locally.
+Other tests cover admission limits, idempotent close, pending-iterator cleanup,
+late terminal observation, immutable event/permission data, and permission handling
+after another observer leaves.
+
+A reattachment test retrieves a live permission missed by a lagged observer, answers
+its original token, and completes the same run. It verifies one prompt dispatch and
+zero automatic cancellation requests. Shared transport failures remain whole-host
+failures; this increment establishes independent observers inside the Bun client.

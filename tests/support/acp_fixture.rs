@@ -304,6 +304,26 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                 reply(id, r#"{"stopReason":"end_turn"}"#);
                 continue;
             }
+            if mode == "host-subscriber" || mode == "host-subscriber-permission" {
+                for index in 0..160 {
+                    update(session, &format!(r#"{{"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{{"type":"text","text":"{index}|"}}}}"#));
+                    if index == 7 {
+                        if let Ok(gate) = std::env::var("BRIDGE_TEST_SUBSCRIBER_GATE") {
+                            std::fs::write(format!("{gate}.ready"), "ready").unwrap();
+                            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                            while !std::path::Path::new(&format!("{gate}.go")).exists() {
+                                assert!(std::time::Instant::now() < deadline, "subscriber gate timed out");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if mode == "host-subscriber" {
+                    reply(id, r#"{"stopReason":"end_turn"}"#);
+                    continue;
+                }
+            }
             if mode == "host-tree-flood" || mode == "host-tree-burst" {
                 let text = "x".repeat(8192);
                 let chunks = if mode == "host-tree-burst" { 40 } else { 512 };
@@ -368,7 +388,7 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                     );
                 }
             }
-            if mode == "permission" || mode == "permissions" {
+            if mode == "permission" || mode == "permissions" || mode == "host-subscriber-permission" {
                 let number = if mode == "permissions" { 2 } else { 1 };
                 pending.insert(session.to_owned(), (id.to_owned(), number, false));
                 update(
@@ -383,6 +403,7 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                         "{{\"jsonrpc\":\"2.0\",\"id\":{permission},\"method\":\"session/request_permission\",\"params\":{{\"sessionId\":{session},\"toolCall\":{{\"toolCallId\":\"tool-1\",\"title\":\"Read fixture\"}},\"options\":[{{\"optionId\":\"allow\",\"name\":\"Allow once\",\"kind\":\"allow_once\"}},{{\"optionId\":\"reject\",\"name\":\"Reject once\",\"kind\":\"reject_once\"}}]}}}}"
                     );
                     io::stdout().flush().unwrap();
+                    if let Ok(path) = std::env::var("BRIDGE_TEST_PERMISSION_READY") { std::fs::write(path, "ready").unwrap(); }
                 }
             } else if mode == "cancel" || mode == "host-tree-cancel" {
                 pending.insert(session.to_owned(), (id.to_owned(), 0, false));

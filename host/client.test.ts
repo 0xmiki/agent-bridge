@@ -413,3 +413,131 @@ for (const journal of ["DELETE", "WAL"] as const) {
     check.close();
   }, 30000);
 }
+
+test("an unread run stream cannot disconnect another run or lose durable history", async () => {
+  const host = new BridgeHost(binary);
+  try {
+    const [noisy, healthy] = await Promise.all([host.createSession(options("unread", "host-subscriber")), host.createSession(options("unread-healthy", "cancel"))]);
+    const unread = noisy.run("stream");
+    const normal = healthy.run("hello");
+    const normalEvents = collect(normal);
+    expect((await within(unread.completed, 5000)).status).toBe("completed");
+    expect(await host.request("ping")).toEqual({alive:true});
+    await within(normal.cancel());
+    expect((await within(normalEvents)).filter(event => event.event === "text_delta").map(event => event.event === "text_delta" && event.text)).toEqual(["Hello "]);
+    expect((await normal.completed).status).toBe("cancelled");
+    await expect(unread.events[Symbol.asyncIterator]().next()).rejects.toHaveProperty("code", "subscriber_lagged");
+    const state = new SessionState(noisy.database, noisy.id);
+    await state.sync(host);
+    expect(state.items.filter(item => item.kind === "message" && item.role === "agent").map(item => item.kind === "message" && item.text)).toEqual([Array.from({length:160}, (_, i) => `${i}|`).join("")]);
+    expect((await unread.completed).recording_error).toBeNull();
+  } finally { await host.close(); }
+}, 15000);
+
+test("slow subscribers hit their own event and byte limits while a fast subscriber receives every event", async () => {
+  const host = new BridgeHost(binary);
+  const gate = join(directory, "subscriber-gate");
+  try {
+    const session = await host.createSession(options("subscribers", "host-subscriber", {BRIDGE_TEST_SUBSCRIBER_GATE:gate}));
+    const run = session.run("stream");
+    const slow = run.subscribe();
+    const tiny = run.subscribe({maxBytes:512});
+    const timeline: string[] = [];
+    const fast = collect(run, timeline);
+    await until(() => timeline.length === 8 && existsSync(`${gate}.ready`));
+    // Only eight events exist: this overflow must be the byte budget, not 128 events.
+    await expect(tiny[Symbol.asyncIterator]().next()).rejects.toHaveProperty("code", "subscriber_lagged");
+    expect(await host.request("ping")).toEqual({alive:true});
+    writeFileSync(`${gate}.go`, "go");
+    const events = await within(fast, 5000);
+    expect(timeline).toEqual(Array.from({length:160}, (_, i) => `${i}|`));
+    expect(events.filter(event => event.event === "run_finished")).toHaveLength(1);
+    expect((await run.completed).status).toBe("completed");
+    await expect(slow[Symbol.asyncIterator]().next()).rejects.toHaveProperty("code", "subscriber_lagged");
+    const late = run.subscribe();
+    const observed = []; for await (const event of late) observed.push(event);
+    expect(observed).toEqual([await run.completed]);
+  } finally { writeFileSync(`${gate}.go`, "go"); await host.close(); }
+}, 15000);
+
+test("leaving one observer does not cancel a run or let it mutate another observer's permissions", async () => {
+  const host = new BridgeHost(binary);
+  try {
+    const session = await host.createSession(options("observer-permission", "permission"));
+    const run = session.run("ask");
+    const observer = run.subscribe();
+    // Async-iterator return on break must release this subscription only.
+    for await (const event of run.events) {
+      expect(event.event).toBe("text_delta");
+      expect(() => Object.assign(event, {text:"corrupted"})).toThrow();
+      break;
+    }
+    let decisions = 0; let terminals = 0;
+    for await (const event of observer) {
+      if (event.event === "permission") {
+        expect(() => Object.assign(event.options[0]!, {id:"spoofed"})).toThrow();
+        expect(() => (event.options as unknown[]).push({id:"spoofed"})).toThrow();
+        await run.respond(event.permission_id, "allow"); decisions++;
+      }
+      if (event.event === "run_finished") terminals++;
+    }
+    expect(decisions).toBe(1); expect(terminals).toBe(1);
+    expect((await run.completed).status).toBe("completed");
+    expect((await run.completed).recording_error).toBeNull();
+    expect(await host.request("ping")).toEqual({alive:true});
+  } finally { await host.close(); }
+}, 15000);
+
+test("subscriber admission and unsubscribe are bounded independently of run ownership", async () => {
+  const host = new BridgeHost(binary);
+  try {
+    const session = await host.createSession(options("observer-limit", "cancel"));
+    const run = session.run("wait");
+    await run.started;
+    expect(() => run.subscribe({maxEvents:129})).toThrow("invalid subscription limits");
+    expect(() => run.subscribe({maxBytes:0})).toThrow("invalid subscription limits");
+    const watchers = Array.from({length:7}, () => run.subscribe());
+    expect(() => run.subscribe()).toThrow("subscriber limit");
+    watchers[0]!.close(); watchers[0]!.close();
+    const replacement = run.subscribe();
+    const iterator = replacement[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    replacement.close();
+    // It may have received the first delta before close; the next read must be done.
+    await pending;
+    expect((await iterator.next()).done).toBe(true);
+    for (const watcher of watchers) watcher.close();
+    run.events.close();
+    expect((await watchers[0]![Symbol.asyncIterator]().next()).done).toBe(true);
+    await within(run.cancel());
+    expect((await within(run.completed)).status).toBe("cancelled");
+    expect(await host.request("ping")).toEqual({alive:true});
+  } finally { await host.close(); }
+}, 15000);
+
+test("reattached observers recover a pending permission after lag without replaying the run", async () => {
+  const host = new BridgeHost(binary);
+  const marker = join(directory, "lagged-permission");
+  const requests = join(directory, "lagged-permission-requests");
+  try {
+    const session = await host.createSession(options("lagged-permission", "host-subscriber-permission", {BRIDGE_TEST_PERMISSION_READY:marker, BRIDGE_TEST_MESSAGES:requests}));
+    const run = session.run("ask");
+    await until(() => existsSync(marker));
+    const reattached = run.subscribe();
+    const pending = await within((async () => {
+      for (;;) { const pending = await run.pendingPermissions(); if (pending.length) return pending; await Bun.sleep(5); }
+    })());
+    await expect(run.events[Symbol.asyncIterator]().next()).rejects.toHaveProperty("code", "subscriber_lagged");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.session_id).toBe(session.id);
+    expect(pending[0]!.options.map(option => option.id)).toEqual(["allow", "reject"]);
+    await run.respond(pending[0]!.permission_id, "allow");
+    const seen = []; for await (const event of reattached) seen.push(event);
+    expect(seen.filter(event => event.event === "run_finished")).toEqual([await run.completed]);
+    expect((await run.completed).status).toBe("completed");
+    expect(await run.pendingPermissions()).toEqual([]);
+    const wire = readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(wire.filter(frame => frame.method === "session/prompt")).toHaveLength(1);
+    expect(wire.filter(frame => frame.method === "session/cancel")).toHaveLength(0);
+  } finally { await host.close(); }
+}, 15000);
