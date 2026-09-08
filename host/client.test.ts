@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "no
 import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import {createConnection} from "node:net";
+import type {QuestionDefinition,QuestionHandle,AnswerOutcome} from "./questions";
+import {QuestionClient} from "./questions";
 import { join, resolve } from "node:path";
 import { BridgeHost, type HostRun, type RunEvent, type StoredRecord } from "./client";
 import { SessionState } from "./state";
@@ -384,13 +386,27 @@ for (const journal of ["DELETE", "WAL"] as const) {
     try {
       const sessions = await Promise.all(gates.map((gate, i) => host.createSession({...options(`shared-${journal}-${i}`, "host-state", {BRIDGE_TEST_GATE:gate}), database})));
       const states = sessions.map(session => new SessionState(database, session.id));
+      async function refresh(state: SessionState) {
+        const deadline = performance.now() + 1500;
+        for (;;) {
+          const before = state.checkpoint();
+          try { await state.sync(host, 2); return; }
+          catch (error) {
+            // A brief exclusive writer lock can exceed the host's 100 ms budget.
+            // Retry only this read, with unchanged state and a bounded deadline.
+            if (!(error instanceof Error) || (error as Error & {code?:string}).code !== "history_failed" || error.message !== "record store: Busy" || performance.now() >= deadline) throw error;
+            expect(state.checkpoint()).toEqual(before);
+            await Bun.sleep(5);
+          }
+        }
+      }
       for (let turn = 0; turn < 2; turn++) {
         const runs = sessions.map((session, i) => session.run(turn === 0 ? `shared-${i}` : "recall"));
         const results = runs.map(run => collect(run));
         for (let chunk = 0; chunk < 2; chunk++) {
           await until(() => gates.every(gate => existsSync(`${gate}.ready-${turn}-${chunk}`)));
           gates.forEach(gate => writeFileSync(`${gate}.go-${turn}-${chunk}`, "go"));
-          await within(Promise.all(states.map(state => state.sync(host, 2))));
+          await within(Promise.all(states.map(refresh)));
         }
         const events = await Promise.all(results);
         for (let i = 0; i < sessions.length; i++) {
@@ -844,3 +860,155 @@ test("a binding admits four concurrent calls and rejects excess work without dis
     }
   } finally {release();await host.close();}
 },20000);
+
+const form:QuestionDefinition={title:"Choose the next action",fields:[
+  {id:"action",label:"Action",required:true,kind:{type:"select",data:{options:[{id:"review",label:"Review"},{id:"skip",label:"Skip"}]}}},
+  {id:"confirm",label:"Confirm",required:true,kind:{type:"boolean"}},
+  {id:"count",label:"Count",required:true,kind:{type:"integer",data:{min:0,max:3}}},
+  {id:"note",label:"Note",required:false,kind:{type:"text",data:{max_bytes:4}}},
+]};
+const submitted:AnswerOutcome={type:"submitted",data:{action:{type:"selected",data:"review"},confirm:{type:"boolean",data:false},count:{type:"integer",data:0},note:{type:"text",data:"é"}}};
+
+test("hosted questions validate atomic answers, preserve relationships, and reopen as typed state",async()=>{
+  let presented!:(q:QuestionHandle)=>void;const shown=new Promise<QuestionHandle>(resolve=>presented=resolve);
+  let resumed!:(answer:AnswerOutcome)=>void;const answered=new Promise<AnswerOutcome>(resolve=>resumed=resolve);
+  let release!:()=>void;const held=new Promise<void>(resolve=>release=resolve);
+  const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Ask the application",input:lookupInput,
+    async execute(_,context){const answer=await context.ask(form);resumed(answer);await held;return answer;}});
+  const host=new BridgeHost(binary,{tools:[lookup],onQuestion:q=>presented(q)});
+  const config=toolAgent("question-main");let id="";let saved:StoredRecord[]=[];
+  try{
+    const session=await host.createSession({...config,allowTools:[lookup]});id=session.id;
+    const run=session.run("ask");run.events.close();
+    const question=await within(shown,10000);
+    const before=(await session.history()).records.find(row=>row.id===question.id)!;
+    expect(before.state).toBe("open");expect(before.source).toEqual({namespace:"agent_bridge.tool_invocation",id:question.view.call_id});expect(before.run_id).toBeNull();
+    expect((await host.pendingQuestions(id)).map(q=>q.id)).toEqual([question.id]);
+    await expect(host.request("question_answer",{...question.view,slot_id:"foreign",outcome:submitted})).rejects.toHaveProperty("code","invalid_answer");
+    await expect(host.request("question_answer",{...question.view,revision:"1",outcome:submitted})).rejects.toHaveProperty("code","invalid_answer");
+    await expect(question.answer({type:"submitted",data:{}})).rejects.toHaveProperty("code","invalid_answer");
+    await expect(question.answer({...submitted,data:{...submitted.data,note:{type:"text",data:"ééé"}}})).rejects.toHaveProperty("code","invalid_answer");
+    const [first,duplicate]=await Promise.all([question.answer(submitted),question.answer(submitted)]);
+    expect(first).toEqual(duplicate);expect(first.stored).toBe(true);expect(await within(answered)).toEqual(submitted);
+    await expect(question.answer({type:"declined"})).rejects.toHaveProperty("code","invalid_answer");
+    expect(await host.pendingQuestions(id)).toEqual([]);
+    release();expect((await within(run.completed,5000)).status).toBe("completed");
+    const state=new SessionState(config.database,id);await state.sync(host);
+    expect(state.items.filter(item=>item.kind==="question")).toHaveLength(1);
+    const answers=state.items.filter(item=>item.kind==="answer");expect(answers).toHaveLength(1);
+    expect(answers[0]!.kind==="answer" && answers[0]!.outcome).toEqual(submitted);
+    expect(answers[0]!.record.reply_to_id).toBe(question.id);expect(answers[0]!.record.actor).toBe("user");
+    saved=state.items.map(item=>item.record);
+    const legacy={...state.checkpoint()!,projection_version:1,records:saved.map(({source,reply_to_id,...row})=>row)};
+    const migrated=new SessionState(config.database,id,legacy);expect(migrated.cursor).toBeUndefined();await migrated.sync(host);expect(migrated.items.map(item=>item.record)).toEqual(saved);
+    await expect(question.answer(submitted)).rejects.toHaveProperty("code","invalid_answer");
+  }finally{release();await host.close();}
+  const reopened=new BridgeHost(binary);
+  try{expect((await reopened.history(config.database,id)).records).toEqual(saved);}finally{await reopened.close();}
+},20000);
+
+test("cancelling a tool stores question cancellation and prevents its handler from resuming",async()=>{
+  let presented!:(q:QuestionHandle)=>void;const shown=new Promise<QuestionHandle>(resolve=>presented=resolve);let continued=false;
+  const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Ask",input:lookupInput,
+    async execute(_,context){await context.ask(form);continued=true;return null;}});
+  const host=new BridgeHost(binary,{tools:[lookup],onQuestion:q=>presented(q)});
+  try{
+    const session=await host.createSession({...toolAgent("question-cancel"),allowTools:[lookup]});const run=session.run("ask");const stream=text(run);
+    const question=await within(shown,10000);await run.cancel();await within(stream,5000);
+    await until(()=>question.signal.aborted,5000);expect(continued).toBe(false);
+    await expect(question.answer(submitted)).rejects.toHaveProperty("code","invalid_answer");
+    await within((async()=>{for(;;){const records=(await session.history()).records;if(records.some(r=>r.payload.type==="answer"))break;await Bun.sleep(5);}})(),5000);
+    const answer=(await session.history()).records.find(r=>r.payload.type==="answer")!;
+    expect(answer.payload.data).toEqual({outcome:{type:"cancelled"},delivery:"stored"});expect(answer.actor).toBe("host");
+    expect(answer.reply_to_id).toBe(question.id);
+  }finally{await host.close();}
+},20000);
+
+test("question UI failures leave a recoverable pending form and decline stays data",async()=>{
+  let original:QuestionHandle|undefined;
+  const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Ask",input:lookupInput,execute:(_,context)=>context.ask(form)});
+  const host=new BridgeHost(binary,{tools:[lookup],onQuestion:question=>{original=question;throw new Error("renderer unavailable");}});
+  try{
+    const session=await host.createSession({...toolAgent("question-ui-error"),allowTools:[lookup]});const run=session.run("ask");const result=text(run);
+    await until(()=>original?.error?.message==="renderer unavailable",10000);
+    const pending=await host.pendingQuestions(session.id);expect(pending).toHaveLength(1);expect(pending[0]).toBe(original!);
+    await expect(host.request("question_ask",{...original!.view,definition:form})).rejects.toHaveProperty("code","invalid_question");
+    await pending[0]!.answer({type:"declined"});expect(JSON.parse(await within(result,5000))).toEqual({type:"declined"});
+    expect((await run.completed).status).toBe("completed");
+    expect((await session.history()).records.filter(row=>row.payload.type==="answer").map(row=>row.payload.data)).toEqual([{outcome:{type:"declined"},delivery:"stored"}]);
+  }finally{await host.close();}
+},20000);
+
+test("an answer write failure neither consumes the question nor resumes the tool",async()=>{
+  let presented!:(q:QuestionHandle)=>void;const shown=new Promise<QuestionHandle>(resolve=>presented=resolve);let resumed=false;
+  const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Ask",input:lookupInput,async execute(_,context){const value=await context.ask(form);resumed=true;return value;}});
+  const host=new BridgeHost(binary,{tools:[lookup],onQuestion:q=>presented(q)});
+  try{
+    const config=toolAgent("question-storage");const session=await host.createSession({...config,allowTools:[lookup]});const run=session.run("ask");const result=text(run);
+    const question=await within(shown,10000);
+    const sql=new Database(config.database);
+    sql.exec("CREATE TRIGGER reject_question_answer BEFORE INSERT ON agent_bridge_records WHEN json_extract(NEW.payload_json,'$.data.type') = 'answer' BEGIN SELECT RAISE(ABORT,'injected answer failure'); END;");
+    await expect(question.answer(submitted)).rejects.toHaveProperty("code","invalid_answer");
+    expect(resumed).toBe(false);expect((await host.pendingQuestions(session.id)).map(q=>q.id)).toEqual([question.id]);
+    const before=(await session.history()).records;expect(before.find(r=>r.id===question.id)!.state).toBe("open");expect(before.filter(r=>r.payload.type==="answer")).toHaveLength(0);
+    sql.exec("DROP TRIGGER reject_question_answer");sql.close();
+    await question.answer(submitted);await within(result,5000);expect(resumed).toBe(true);
+  }finally{await host.close();}
+},20000);
+
+for(const ending of ["deadline","shutdown"] as const){
+  test(`a pending question closes on ${ending} and cannot resume its ended invocation`,async()=>{
+    let presented!:(q:QuestionHandle)=>void;const shown=new Promise<QuestionHandle>(resolve=>presented=resolve);let continued=false;
+    const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Wait",input:lookupInput,async execute(_,context){await context.ask(form);continued=true;return null;}});
+    const host=new BridgeHost(binary,{tools:[lookup],toolTimeoutMs:ending==="deadline"?300:30000,onQuestion:q=>presented(q)});
+    let closed=false;
+    try{
+      const session=await host.createSession({...toolAgent(`question-${ending}`),allowTools:[lookup]});const run=session.run("ask");run.events.close();
+      const question=await within(shown,10000);
+      if(ending==="shutdown"){await within(host.close(),8000);closed=true;}
+      else {await within(run.completed,5000);await until(()=>question.signal.aborted,5000);}
+      expect(question.signal.aborted).toBe(true);expect(continued).toBe(false);
+      const reader=new BridgeHost(binary);
+      try{
+        const records=(await reader.history(session.database,session.id)).records;
+        const answer=records.find(row=>row.payload.type==="answer");expect(answer?.payload.data).toEqual({outcome:{type:"cancelled"},delivery:"stored"});
+      }finally{await reader.close();}
+    }finally{if(!closed)await host.close();}
+  },20000);
+}
+
+test("question count is bounded per invocation without granting or retrying work",async()=>{
+  let shown=0;let answered=0;
+  const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Ask bounded questions",input:lookupInput,
+    async execute(_,context){for(let i=0;i<8;i++){await context.ask(form);answered++;}await expect(context.ask(form)).rejects.toHaveProperty("code","invalid_question");return {answered};}});
+  const host=new BridgeHost(binary,{tools:[lookup],onQuestion:async question=>{shown++;await question.answer(submitted);}});
+  try{
+    await expect(host.request("question_ask",{call_id:"foreign",definition:form})).rejects.toThrow();
+    const session=await host.createSession({...toolAgent("question-limit"),allowTools:[lookup]});const run=session.run("ask");expect(JSON.parse(await within(text(run),15000))).toEqual({answered:8});expect(shown).toBe(8);
+    const records=(await session.history()).records;expect(records.filter(r=>r.payload.type==="question")).toHaveLength(8);expect(records.filter(r=>r.payload.type==="answer")).toHaveLength(8);
+  }finally{await host.close();}
+},20000);
+
+test("a delayed pending-question snapshot cannot resurrect a closed question",async()=>{
+  let deliver!:(value:unknown)=>void;
+  const delayed=new Promise(resolve=>deliver=resolve);
+  let active=true;
+  const client=new QuestionClient(true,async()=>delayed,()=>active);
+  const view={question_id:"q",revision:"0",call_id:"call",binding_id:"binding",session_id:"s",slot_id:"slot",definition:form};
+  const handle=client.opened(view,false)!;
+  expect(()=>client.closed(view.question_id,{...view,slot_id:"wrong"})).toThrow("mismatched question closure");expect(handle.signal.aborted).toBe(false);
+  const pending=client.pending();client.closed(view.question_id);deliver([view]);
+  expect(await pending).toEqual([]);expect(handle.signal.aborted).toBe(true);
+  const orphan=client.opened({...view,question_id:"orphan"},false)!;
+  active=false;expect(client.opened({...view,question_id:"late"},false)).toBeUndefined();
+  expect(orphan.signal.aborted).toBe(true);
+  client.stop();
+});
+
+test("close still ends the host when request admission is saturated",async()=>{
+  const host=new BridgeHost(binary);await host.ready;
+  const pending=Array.from({length:64},()=>host.request("ping").catch(()=>{}));
+  await expect(within(host.close(),5000)).rejects.toThrow("too many pending requests");
+  await Promise.all(pending);
+  await within(host.close(),5000);
+},10000);

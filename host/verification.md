@@ -228,3 +228,37 @@ remains running; exited Linux zombies are treated as stopped while awaiting OS r
 These results establish the first hosted-tool workflow, not complete H2. Hosted
 questions, selected context, validated agent results, dynamic binding changes, other
 platforms, and post-crash reconciliation remain open.
+
+## H2 hosted structured questions, September 8
+
+192 Rust tests and forty-four Bun host tests passed locally, together with Clippy,
+rustfmt, TypeScript checking, dependency-free core compilation, and standalone
+receipt-reader compilation.
+
+Nine new host tests cover tool-scoped forms, all four field types, wrong scope and
+revision, invalid values, identical and conflicting concurrent submissions, failed
+answer writes, cancellation, deadlines, shutdown, and bounded admission. UI callback
+failure leaves a recoverable pending form. Delayed snapshots cannot resurrect closed
+forms, and closing a host with saturated request admission still ends stdin. Exact
+reopened records preserve invocation sources and answer-to-question links; old
+projection checkpoints rescan for those fields.
+
+A final run exposed a transient `history_failed` / `Busy` in the existing shared-DB
+test. Both journal-mode cases passed in isolation. The concurrent-read test now
+allows a bounded retry of that specific read error and checks that the failed read
+leaves its checkpoint unchanged. It never retries generation or storage writes.
+The complete suite passed after the adjustment.
+
+Live `questions-example.ts` checks passed with OpenCode 1.18.25 and Codex CLI 0.153.4
+through codex-acp 1.10.0. Each application handler asked one question, resumed with
+the scripted stored answer, and returned a fresh token the agent included in its
+output. Exact reopened history contained ten records for OpenCode and fifteen for
+Codex. These checks use scripted UI input and do not establish human approval.
+
+Codex session cleanup succeeded. A read-only check of the exact new test thread
+`01a08063-11c2-7382-aaa5-b0b71552a566` confirmed `archived = 1`. The adapter archives
+the thread out of active history rather than permanently erasing it.
+
+Questions currently belong to live granted tool invocations. Selected context and
+validated agent results remain the next H2 slice. Standalone hosted forms, native
+ACP elicitation, post-crash responders, and non-Linux lifecycle remain unverified.

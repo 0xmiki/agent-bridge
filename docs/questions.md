@@ -87,8 +87,9 @@ survive SQLite reopen. It runs without a provider or network connection.
 This increment supports application-managed questions. It does not advertise or
 map native ACP elicitation, URL forms, or provider-specific question tools. Native
 question transport requires a separate mapping with reliable session attribution;
-unverified native support is not implied by these record types. The application
-host/client UI transport remains M6 work.
+unverified native support is not implied by these record types. The
+[host/client question channel](host-questions.md) now composes these records with
+granted application-tool invocations and Bun UI callbacks.
 
 ## Format compatibility and verification
 

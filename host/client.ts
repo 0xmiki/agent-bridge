@@ -2,10 +2,12 @@
 import { spawn } from "bun";
 import type { ReceiptView } from "./receipts";
 import { ToolClient, type ApplicationTool, type ToolReference } from "./tools";
+import {QuestionClient, type QuestionHandle} from "./questions";
+export type {QuestionDefinition,AnswerOutcome,QuestionHandle} from "./questions";
 export { defineTool } from "./tools";
 
 export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean; allowTools?:readonly ToolReference[] }
-export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown }; receipt?: ReceiptView | null }
+export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown }; receipt?: ReceiptView | null; reply_to_id?:string|null;source?:{namespace:string;id:string}|null }
 export interface HistoryPage { records: StoredRecord[]; next_after: string | null; page_full: boolean }
 export interface ChangeCursor { epoch: string; session_id: string; position: string }
 export interface StatePage extends HistoryPage { cursor: ChangeCursor }
@@ -133,13 +135,18 @@ export class BridgeHost {
   private closing = false;
   private tools:ToolClient;
   private configured:Promise<unknown>;
-  constructor(binary: string, options:{tools?:readonly ApplicationTool[]; toolTimeoutMs?:number} = {}) {
-    this.tools = new ToolClient(options.tools ?? [],params=>this.request("tool_result",params));
+  private questions:QuestionClient;
+  constructor(binary: string, options:{tools?:readonly ApplicationTool[]; toolTimeoutMs?:number;questions?:boolean;onQuestion?:(question:QuestionHandle)=>unknown|Promise<unknown>} = {}) {
+    const questions=options.questions===true || options.onQuestion!==undefined;
+    const toolTimeout=options.toolTimeoutMs ?? (questions ? 120000 : 30000);
+    this.tools = new ToolClient(options.tools ?? [],params=>this.request("tool_result",params),(owner,definition,signal)=>this.questions.ask(owner,definition,signal));
+    this.questions = new QuestionClient(questions,(method,params)=>this.send(method,params,`request-${++this.nextId}`,method==="question_ask" ? toolTimeout+5000 : 45000),owner=>this.tools.owns(owner),options.onQuestion);
     this.process = startHost(binary);
     this.configured = this.ready.then(async () => {
-      if (options.tools !== undefined) {
-        const result = await this.request("configure_tools",{callback_protocol:1,tools:this.tools.declarations(),timeout_ms:options.toolTimeoutMs ?? 30000});
+      if (options.tools !== undefined || questions) {
+        const result = await this.request("configure_tools",{callback_protocol:1,question_protocol:questions ? 1:undefined,tools:this.tools.declarations(),timeout_ms:toolTimeout});
         if (result.callback_protocol !== 1) throw new Error("unsupported tool callback protocol");
+        if(questions && result.question_protocol!==1)throw new Error("unsupported question protocol");
       }
     });
     this.configured.catch(()=>{});
@@ -147,7 +154,7 @@ export class BridgeHost {
     reading.catch(error => { this.fail(error); this.process.stdin.end(); });
     this.process.exited.then(async code => { await reading.catch(() => {}); this.fail(new Error(`host exited (${code})`)); });
   }
-  private fail(error: Error) { if (this.error) return; this.error = error; this.tools.stop(); this.readyState.reject(error); for (const value of this.pending.values()) value.reject(error); this.pending.clear(); for (const run of this.runs.values()) run.fail(error); this.runs.clear(); }
+  private fail(error: Error) { if (this.error) return; this.error = error; this.tools.stop(); this.questions.stop(); this.readyState.reject(error); for (const value of this.pending.values()) value.reject(error); this.pending.clear(); for (const run of this.runs.values()) run.fail(error); this.runs.clear(); }
   private async read() {
     const reader = this.process.stdout.getReader(); const decoder = new TextDecoder("utf-8", { fatal: true }); let buffer = "";
     try {
@@ -162,7 +169,9 @@ export class BridgeHost {
         if (typeof frame.id === "string") { const pending = this.pending.get(frame.id); if (!pending) throw new Error("uncorrelated host response"); this.pending.delete(frame.id); if (frame.ok) { this.runs.get(frame.id)?.bind(frame.result); pending.resolve(frame.result); } else pending.reject(Object.assign(new Error(frame.error.message), { code: frame.error.code })); }
         else if (frame.event === "ready") this.readyState.resolve();
         else if (frame.event === "tool_call") this.tools.accept(frame);
-        else if (frame.event === "tool_cancel") this.tools.cancel(frame);
+        else if (frame.event === "tool_cancel") {this.tools.cancel(frame);this.questions.cancelOwner(frame.call_id);}
+        else if (frame.event === "question_opened") this.questions.opened(frame);
+        else if (frame.event === "question_closed") this.questions.closed(frame.question_id,frame);
         else if (frame.stream) { const run = this.runs.get(frame.stream); if (!run) throw new Error("uncorrelated run event"); run.accept(frame); if (frame.event === "run_finished") this.runs.delete(frame.stream); }
         else if (frame.event === "protocol_error") throw new Error(frame.code);
         else if (frame.event !== "session_error") throw new Error("unknown host event");
@@ -172,12 +181,12 @@ export class BridgeHost {
     } catch (error) { await reader.cancel().catch(() => {}); throw error; }
     finally { reader.releaseLock(); }
   }
-  private send(method: string, params: unknown, id: string) {
+  private send(method: string, params: unknown, id: string, timeoutMs=45000) {
     if (this.error) return Promise.reject(this.error);
     if (this.closing && method !== "shutdown") return Promise.reject(new Error("host is closing"));
     if (this.pending.size >= 64) return Promise.reject(new Error("too many pending requests"));
     const pending = deferred<any>(); this.pending.set(id, pending);
-    const timer = setTimeout(() => { if (this.pending.has(id)) { this.fail(new Error("host request timed out")); this.process.stdin.end(); } }, 45000);
+    const timer = setTimeout(() => { if (this.pending.has(id)) { this.fail(new Error("host request timed out")); this.process.stdin.end(); } }, timeoutMs);
     pending.promise.finally(() => clearTimeout(timer)).catch(() => {});
     try { this.process.stdin.write(JSON.stringify({ version: 1, id, method, params }) + "\n"); Promise.resolve(this.process.stdin.flush()).catch(error => this.fail(error)); }
     catch (error) { this.fail(error as Error); }
@@ -203,5 +212,10 @@ export class BridgeHost {
   history(database: string, sessionId: string, after?: string, limit = 1000): Promise<HistoryPage> { return this.request("history", { database, session_id: sessionId, after, limit }); }
   snapshot(database: string, sessionId: string, cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.request("snapshot", { database, session_id: sessionId, cursor, after, limit }); }
   changes(database: string, sessionId: string, cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.request("changes", { database, session_id: sessionId, cursor, limit }); }
-  async close() { this.tools.stop(); if (!this.closing && !this.error) { this.closing = true; await this.request("shutdown"); } this.process.stdin.end(); const code = await this.process.exited; if (code !== 0) throw new Error(`host exited (${code})`); }
+  async pendingQuestions(sessionId?:string) {await this.configured;return this.questions.pending(sessionId);}
+  async close() {
+    this.tools.stop();this.questions.stop();
+    try {if (!this.closing && !this.error) {this.closing=true;await this.request("shutdown");}}
+    finally {this.process.stdin.end();const code=await this.process.exited;if(code!==0)throw new Error(`host exited (${code})`);}
+  }
 }

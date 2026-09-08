@@ -54,6 +54,15 @@ struct Pending {
     session: String,
     slot: String,
     response: oneshot::Sender<Value>,
+    question_owner: QuestionOwner,
+}
+#[derive(Clone)]
+pub struct QuestionOwner {
+    pub call: String,
+    pub binding: String,
+    pub scope: ToolScope,
+    pub store: Arc<storage::Store>,
+    pub cancellation: CancellationToken,
 }
 pub struct Binding {
     pub id: String,
@@ -114,7 +123,7 @@ impl Hub {
         timeout_ms: u64,
         output: Output,
     ) -> Result<Self, String> {
-        if definitions.len() > 16 || !(50..=30000).contains(&timeout_ms) {
+        if definitions.len() > 16 || !(50..=300000).contains(&timeout_ms) {
             return Err("tool limits exceeded".into());
         }
         let broker = Arc::new(Broker {
@@ -242,6 +251,20 @@ impl Hub {
             .send(result.clone())
             .map_err(|_| "tool call already ended".into())
     }
+    pub fn question_owner(&self, params: &Value) -> Result<QuestionOwner, String> {
+        let pending = self.broker.pending.lock().unwrap();
+        let entry = pending
+            .get(super::string(params, "call_id")?)
+            .ok_or("invocation is not pending")?;
+        if params["binding_id"].as_str() != Some(&entry.binding)
+            || params["session_id"].as_str() != Some(&entry.session)
+            || params["slot_id"].as_str() != Some(&entry.slot)
+            || entry.question_owner.cancellation.is_cancelled()
+        {
+            return Err("question belongs to another or ended invocation".into());
+        }
+        Ok(entry.question_owner.clone())
+    }
 }
 
 struct CallGuard {
@@ -251,6 +274,7 @@ struct CallGuard {
     reference: ToolRef,
     settled: bool,
     activity: CancellationToken,
+    question_cancellation: CancellationToken,
 }
 impl CallGuard {
     fn receipt(&self, state: &str, fields: Value) -> Result<(), ToolError> {
@@ -281,6 +305,7 @@ impl CallGuard {
 }
 impl Drop for CallGuard {
     fn drop(&mut self) {
+        self.question_cancellation.cancel();
         self.broker.pending.lock().unwrap().remove(&self.call);
         if !self.settled {
             // MCP does not attest to a call's parent run. Retire this binding so
@@ -347,6 +372,7 @@ impl Broker {
             reference: reference.clone(),
             settled: false,
             activity: activity.clone(),
+            question_cancellation: CancellationToken::new(),
         };
         guard.receipt("dispatch_attempted", json!({"input":input}))?;
         if activity.is_cancelled()
@@ -364,6 +390,13 @@ impl Broker {
                 session: bound.scope.session.to_string(),
                 slot: bound.scope.slot.to_string(),
                 response,
+                question_owner: QuestionOwner {
+                    call: guard.call.clone(),
+                    binding: bound.id.clone(),
+                    scope: bound.scope.clone(),
+                    store: bound.store.clone(),
+                    cancellation: guard.question_cancellation.clone(),
+                },
             },
         );
         self.output.emit(json!({"event":"tool_call","call_id":guard.call,"binding_id":bound.id,"session_id":bound.scope.session.as_str(),"slot_id":bound.scope.slot.as_str(),"tool":reference,"input":input}));

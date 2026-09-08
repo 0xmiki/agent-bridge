@@ -95,7 +95,11 @@ from immutable grants, validate runtime schemas, route callbacks outside observe
 queues, and persist invocation receipts. Tests cover scope/capability spoofing,
 concurrency limits, deadlines, cancellation, recording failures, and rejected retries
 after unknown outcomes. OpenCode and Codex passed the live callback/token check.
-Hosted questions and the remaining context/result workflows are still open in H2.
+Hosted tool-scoped questions validate and atomically store answers. Fixtures cover
+wrong scope/revision, identical and conflicting answers, failed writes, cancellation,
+deadlines, pending-form recovery, bounded admission, and exact reopened state. Both
+providers passed a scripted question round trip. Selected context and validated
+agent results remain open in H2.
 
 ## 5. Restart and uncertainty
 

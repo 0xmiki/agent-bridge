@@ -67,8 +67,8 @@ Tool input and outcome JSON are also retained once in the original payload; thei
 application numbers remain JSON numbers. Invocation receipts do not guess a parent
 run from MCP arrival timing.
 
-Projection checkpoints now carry `projection_version: 1`. Unversioned checkpoints
-trigger a new scan to obtain receipt metadata, even for records whose revisions have
+Projection checkpoints now carry `projection_version: 2`. Unversioned/version-1
+checkpoints trigger a new scan for receipt metadata and source/reply links, even for records whose revisions have
 not changed. Future checkpoint versions fail explicitly. No agent is launched by
 that scan, and no database migration or receipt rewrite is required.
 

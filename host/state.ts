@@ -1,5 +1,6 @@
 import type { BridgeHost, ChangeCursor, StoredRecord } from "./client";
 import { readReceipt, type Receipt } from "./receipts";
+import type {QuestionDefinition,AnswerOutcome} from "./questions";
 
 export type TranscriptItem = { record: StoredRecord } & (
   | { kind: "message"; role: "user" | "agent" | "reasoning"; text: string }
@@ -8,6 +9,8 @@ export type TranscriptItem = { record: StoredRecord } & (
   | { kind: "failure"; message: string }
   | { kind: "run_finished"; reason: string }
   | { kind: "receipt"; receipt: Receipt }
+  | { kind:"question"; definition:QuestionDefinition }
+  | { kind:"answer"; outcome:AnswerOutcome; delivery:"stored"|"queued"|"unknown" }
   | { kind: "other" }
 );
 
@@ -17,6 +20,19 @@ export function project(record: StoredRecord): TranscriptItem {
   const data = record.payload.data as any;
   const invalid = () => { throw new Error(`invalid ${record.payload.type} record ${record.id}`); };
   switch (record.payload.type) {
+    case "question": {
+      if(typeof data?.title!=="string" || !Array.isArray(data.fields))return invalid();
+      for(const field of data.fields){
+        if(field.kind?.type==="integer" && (!Number.isSafeInteger(field.kind.data?.min)||!Number.isSafeInteger(field.kind.data?.max)))return invalid();
+        if(field.kind?.type==="text" && !Number.isSafeInteger(field.kind.data?.max_bytes))return invalid();
+      }
+      return {kind:"question",definition:data,record};
+    }
+    case "answer": {
+      if(!["stored","queued","unknown"].includes(data?.delivery) || !["submitted","declined","cancelled"].includes(data?.outcome?.type))return invalid();
+      if(data.outcome.type==="submitted")for(const value of Object.values(data.outcome.data) as any[]){if(value.type==="integer" && !Number.isSafeInteger(value.data))return invalid();}
+      return {kind:"answer",outcome:data.outcome,delivery:data.delivery,record};
+    }
     case "extension": {
       const receipt = readReceipt(record);
       return receipt ? {kind:"receipt",receipt,record} : {kind:"other",record};
@@ -57,17 +73,17 @@ export class SessionState {
   constructor(readonly database: string, readonly sessionId: string, checkpoint?: StateCheckpoint) {
     if (checkpoint) {
       if (checkpoint.cursor.session_id !== sessionId || checkpoint.records.some(row => row.session_id !== sessionId)) throw new Error("foreign state checkpoint");
-      // Legacy checkpoints have no receipt metadata. Rescan instead of keeping
+      // Legacy checkpoints lack receipt metadata or source/reply links. Rescan instead of keeping
       // same-revision records forever without the new projection fields.
-      if (checkpoint.projection_version === undefined) return;
-      if (checkpoint.projection_version !== 1) throw new Error("unsupported state projection version");
+      if (checkpoint.projection_version === undefined || checkpoint.projection_version === 1) return;
+      if (checkpoint.projection_version !== 2) throw new Error("unsupported state projection version");
       const copy = structuredClone(checkpoint);
       copy.records.forEach(project);
       this.records = new Map(copy.records.map(row => [row.id, row])); this.position = copy.cursor;
     }
   }
   checkpoint(): StateCheckpoint | undefined {
-    return this.position && structuredClone({ projection_version:1, cursor: this.position, records: [...this.records.values()] });
+    return this.position && structuredClone({ projection_version:2, cursor: this.position, records: [...this.records.values()] });
   }
   async sync(host: BridgeHost, limit = 100) {
     if (this.syncing) throw new Error("state sync already in progress");

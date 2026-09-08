@@ -64,8 +64,9 @@ portable history does not itself recreate live permission handles.
 Typed readers expose message roles/text, tool titles/statuses, permission options,
 failures, completion reasons, and [bridge-owned receipts](receipt-readers.md). Raw
 records retain resources, decisions, questions, and other extensions. Saved checkpoints
-carry `projection_version: 1`; older unversioned checkpoints trigger a fresh scan so
-same-revision records acquire the new receipt metadata. Future checkpoint versions
+carry `projection_version: 2`; older unversioned/version-1 checkpoints trigger a fresh
+scan so same-revision records acquire receipt metadata and source/reply relationships.
+Question and answer items are typed, including their stored delivery state. Future checkpoint versions
 fail explicitly. The public API remains provisional.
 
 Tests cover updates to old records, overlapping pages, coalescing, exact reopened

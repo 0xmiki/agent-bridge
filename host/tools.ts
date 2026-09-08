@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type {QuestionDefinition,AnswerOutcome,QuestionOwner} from "./questions";
 
 export type Json = null | boolean | number | string | Json[] | {[key:string]:Json};
 export interface ToolReference { name:string; revision:string }
@@ -6,6 +7,7 @@ export interface ToolContext {
   readonly invocationId:string; readonly bindingId:string;
   readonly scope: Readonly<{sessionId:string;slotId:string}>;
   readonly signal:AbortSignal;
+  ask(question:QuestionDefinition):Promise<AnswerOutcome>;
 }
 export interface ToolInput<I> { jsonSchema:Json; parse(value:unknown):I }
 export interface ApplicationTool extends ToolReference {
@@ -26,6 +28,7 @@ function frozen<T>(value:T):T {
   if (value && typeof value === "object") { Object.values(value).forEach(frozen); Object.freeze(value); }
   return value;
 }
+export function assertJson(value:unknown):asserts value is Json {check(value);}
 export function defineTool<I,O>(options:ToolReference & {description:string; input:ToolInput<I>; execute(input:I,context:ToolContext):O|Promise<O>}):ApplicationTool {
   check(options.input.jsonSchema);
   const schema = frozen(structuredClone(options.input.jsonSchema));
@@ -49,13 +52,19 @@ export class ToolClient {
   private bindings = new Map<string,{session:string;slot:string;tools:ToolReference[]}>();
   private active = new Map<string,{call:Call;controller:AbortController}>();
   private stopped = false;
-  constructor(tools:readonly ApplicationTool[],private send:(params:unknown)=>Promise<unknown>) {
+  constructor(tools:readonly ApplicationTool[],private send:(params:unknown)=>Promise<unknown>,private ask:(owner:QuestionOwner,question:QuestionDefinition,signal:AbortSignal)=>Promise<AnswerOutcome>) {
     for (const tool of tools) {
       if (this.definitions.has(tool.name)) throw new Error("duplicate tool declaration");
       this.definitions.set(tool.name,tool);
     }
   }
   declarations() { return [...this.definitions.values()].map(({name,revision,description,input_schema})=>({name,revision,description,input_schema})); }
+  owns(owner:QuestionOwner):boolean {
+    const pending=this.active.get(owner.call_id);
+    if(!pending || pending.controller.signal.aborted)return false;
+    if(pending.call.binding_id!==owner.binding_id || pending.call.session_id!==owner.session_id || pending.call.slot_id!==owner.slot_id)throw new Error("question scope does not match its invocation");
+    return true;
+  }
   bind(id:string|null|undefined,session:string,slot:string,tools:ToolReference[]) {
     if (tools.length && typeof id !== "string") throw new Error("missing host tool binding");
     if (id) this.bindings.set(id,{session,slot,tools:structuredClone(tools)});
@@ -77,7 +86,8 @@ export class ToolClient {
     if (this.active.size >= 16) { void response({kind:"error",message:"application handler capacity reached"}).catch(()=>{}); return; }
     const controller = new AbortController();
     this.active.set(call.call_id,{call,controller});
-    const context:ToolContext = Object.freeze({invocationId:call.call_id,bindingId:call.binding_id,scope:Object.freeze({sessionId:binding.session,slotId:binding.slot}),signal:controller.signal});
+    const context:ToolContext = Object.freeze({invocationId:call.call_id,bindingId:call.binding_id,scope:Object.freeze({sessionId:binding.session,slotId:binding.slot}),signal:controller.signal,
+      ask:(definition:QuestionDefinition)=>this.ask({call_id:call.call_id,binding_id:call.binding_id,session_id:call.session_id,slot_id:call.slot_id},definition,controller.signal)});
     // Callbacks are independent of run observers. Slots remain occupied until the
     // actual handler returns, even if it ignores its abort signal.
     void Promise.resolve().then(async () => {

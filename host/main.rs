@@ -1,5 +1,6 @@
 //! Experimental owned ACP host. Stdout is exclusively protocol v1 JSON-lines.
 mod output;
+mod questions;
 mod receipts;
 mod storage;
 mod tool_hub;
@@ -67,6 +68,8 @@ struct ConfigureTools {
     callback_protocol: u32,
     tools: Vec<tool_hub::Definition>,
     timeout_ms: u64,
+    #[serde(default)]
+    question_protocol: Option<u32>,
 }
 #[derive(Clone)]
 struct Output {
@@ -110,7 +113,8 @@ fn state(status: RunStatus) -> &'static str {
 fn snapshot(value: &Snapshot) -> Value {
     let record = &value.record;
     json!({"id":record.id.as_str(),"session_id":record.session_id.as_str(),"run_id":record.run_id.as_ref().map(|id|id.as_str()),
-        "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload,"receipt":receipts::view(&record.payload)})
+        "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload,"receipt":receipts::view(&record.payload),
+        "reply_to_id":record.reply_to_id.as_ref().map(|id|id.as_str()),"source":value.source})
 }
 fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
     let store =
@@ -334,6 +338,14 @@ fn main() {
         failed: failed.clone(),
     };
     let mut tools = Arc::new(tool_hub::Hub::new(vec![], 30000, output.clone()).unwrap());
+    let question_service = Arc::new(questions::Service::new(output.clone()));
+    let question_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut question_tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
+    let mut question_protocol = false;
     let mut tools_locked = false;
     let writer_stop = stop.clone();
     let writer_failed = failed.clone();
@@ -367,6 +379,7 @@ fn main() {
     let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     loop {
+        question_tasks.retain(|task| !task.is_finished());
         sessions.retain(|_, sender: &mut tokio::sync::mpsc::Sender<Request>| !sender.is_closed());
         let mut index = 0;
         while index < workers.len() {
@@ -430,11 +443,20 @@ fn main() {
                     );
                     continue;
                 }
+                if config.question_protocol.is_some_and(|version| version != 1) {
+                    output.error(
+                        &request.id,
+                        "unsupported_question_protocol",
+                        "question protocol 1 required",
+                    );
+                    continue;
+                }
                 match tool_hub::Hub::new(config.tools, config.timeout_ms, output.clone()) {
                     Ok(hub) => {
                         tools = Arc::new(hub);
                         tools_locked = true;
-                        output.ok(&request.id, json!({"callback_protocol":1}));
+                        question_protocol = config.question_protocol == Some(1);
+                        output.ok(&request.id, json!({"callback_protocol":1,"question_protocol":config.question_protocol}));
                     }
                     Err(error) => output.error(&request.id, "invalid_tools", error),
                 }
@@ -443,6 +465,32 @@ fn main() {
                 Ok(()) => output.ok(&request.id, json!({"response_queued":true})),
                 Err(error) => output.error(&request.id, "invalid_tool_result", error),
             },
+            "question_ask" | "question_answer" | "question_pending" => {
+                if !question_protocol {
+                    output.error(
+                        &request.id,
+                        "questions_disabled",
+                        "question callbacks were not negotiated",
+                    );
+                    continue;
+                }
+                let owner = if request.method == "question_ask" {
+                    match tools.question_owner(&request.params) {
+                        Ok(owner) => Some(owner),
+                        Err(error) => {
+                            output.error(&request.id, "invalid_question_scope", error);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some(task) =
+                    question_service.dispatch(question_runtime.handle(), request, owner)
+                {
+                    question_tasks.push(task);
+                }
+            }
             "ping" => output.ok(&request.id, json!({"alive":true})),
             "shutdown" => {
                 output.ok(&request.id, json!({"shutdown_requested":true}));
@@ -562,6 +610,22 @@ fn main() {
     }
     drop(output);
     drop(tools);
+    let drained = question_runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            for task in &mut question_tasks {
+                let _ = task.await;
+            }
+        })
+        .await
+    });
+    if drained.is_err() {
+        for task in question_tasks {
+            task.abort();
+        }
+        failed.store(true, Ordering::SeqCst);
+    }
+    question_runtime.shutdown_timeout(Duration::from_secs(3));
+    drop(question_service);
     let _ = writer.join();
     if failed.load(Ordering::SeqCst) {
         std::process::exit(1);

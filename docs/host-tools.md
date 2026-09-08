@@ -94,7 +94,8 @@ return fails, the provider receives an error and the binding becomes uncertain/r
   four MCP connections per binding.
 - Input/result envelopes are bounded to 64 KiB; application success values to 60,000
   bytes. JSON depth is limited to sixteen and unsafe JavaScript integers are rejected.
-- `toolTimeoutMs` defaults to 30,000, with a supported range of 50–30,000. It bounds
+- `toolTimeoutMs` defaults to 30,000, or 120,000 with hosted questions enabled, with
+  a supported range of 50–300,000. It bounds
   waiting for the application response after dispatch, not every earlier storage step.
 - Store queues now admit eight pending jobs for the recorder and tool callbacks.
   The existing twelve-worker budget and 500 ms storage wait policy remain.
@@ -127,6 +128,7 @@ call rejection, schema failures, spoofed metadata, cross-binding capabilities, s
 and late results, deadlines, recording failures, and provider-initiated retry rejection.
 Live OpenCode/Codex evidence is recorded in [host verification](../host/verification.md).
 
-Hosted questions, context delivery, validated agent results, dynamic binding replacement,
-and post-crash reconciliation remain later work. This helper currently requires Unix;
+[Hosted questions](host-questions.md) are now available through `context.ask`.
+Context delivery, validated agent results, dynamic binding replacement, and post-crash
+reconciliation remain later work. This helper currently requires Unix;
 the verified platform is Linux.

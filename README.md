@@ -50,7 +50,9 @@ without equating document delivery with native activation.
 [Application tools](docs/application-tools.md) add typed asynchronous handlers,
 session/slot grants, and a host-bound MCP server.
 [Structured questions](docs/questions.md) add validated, atomic answers and a local
-awaitable handle for application-managed interactions.
+awaitable handle for application-managed interactions. The
+[hosted question API](docs/host-questions.md) lets tool handlers await a form rendered
+by the application, with answer validation and persistence in Rust.
 [Execution relationships](docs/execution-relations.md) record bridge-managed children
 with explicitly selected context and narrowed application-tool authority.
 

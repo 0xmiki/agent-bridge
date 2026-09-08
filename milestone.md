@@ -42,8 +42,8 @@ exposes typed adapter events; the Bun client uses host DTOs. Acceptance:
 H1 acceptance, checks, and retained limitations are recorded in
 [h1-acceptance.md](docs/h1-acceptance.md). This completes the integration proof; it
 does not release an alpha or claim equivalent runtime guarantees for every embedding
-path. H2 below tracks hosted interactions. Its first tool workflow is implemented;
-questions, context, and result handling are the remaining work.
+path. H2 below tracks hosted interactions. Tools and tool-scoped questions are
+implemented; context and result handling are the remaining work.
 
 Test hygiene: disposable Codex checks must request provider session cleanup after
 verification. `host/example.ts` enables this automatically for codex-acp launches;
@@ -58,14 +58,17 @@ Outcome: tools and questions use the same integration. Acceptance: quality gate 
 - [x] Derive MCP bindings from grants; reject stale revisions, wrong capabilities, and cross-scope results.
 - [x] Tool cancellation, bounded calls, once-only result acceptance, and typed receipts; unknown outcomes retire the binding.
 - [x] Real hosted tool invocation with OpenCode and Codex, including Codex test-thread cleanup.
-- [ ] Hosted structured questions and atomic answer workflows.
+- [x] Tool-scoped hosted structured questions and atomic answers, with cancellation, pending-form recovery, and live OpenCode/Codex checks.
 - [ ] Hosted selected-context delivery and validated agent results.
 
 Use existing Rust primitives. Add child APIs when an acceptance scenario establishes
 application ownership; a general multi-agent scheduler is not required.
 The first tool workflow is documented in [host-tools.md](docs/host-tools.md). It uses
-Unix IPC with Linux verification and a bounded runtime-schema subset. Next slice:
-hosted structured questions, reusing application callbacks and recorded interactions.
+Unix IPC with Linux verification and a bounded runtime-schema subset.
+[Hosted questions](docs/host-questions.md) reuse the same invocation ownership and
+record validated answers. Next slice: selected-context delivery and validated agent
+results through the host. Standalone hosted questions remain an extension to consider
+when an acceptance scenario needs them.
 This does not complete H2 or the post-crash recovery contract.
 
 ## H3 — Local restart contract (planned)

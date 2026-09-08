@@ -136,9 +136,13 @@ kernel-level I/O failures still need platform verification before wider claims.
 
 History pagination orders record creation; `snapshot` and `changes` support record
 updates and reconnecting projections. Reopening history
-does not reconnect a native session or recover uncertain work. Structured
-questions, context policies, restoration, and child execution currently have Rust
-APIs but are not exposed by this host. Session diagnostics and typed state projections
+does not reconnect a native session or recover uncertain work. Tool handlers can use
+`ctx.ask(definition)` and applications can render forms through `onQuestion` or
+`pendingQuestions()`. See [hosted questions](../docs/host-questions.md) and
+`questions-example.ts`. Enabling questions sets the default tool deadline to 120
+seconds, including time spent awaiting answers. Context policies, restoration, and
+child execution currently have Rust APIs but are not exposed by this host.
+Session diagnostics and typed state projections
 also need a fuller client contract.
 
 The fixture suite forces distinct streams to interleave and retain their own context,

@@ -57,6 +57,10 @@ is safe. Unknown error codes must remain visible rather than becoming success.
 | `invalid_tools`, `invalid_tool_grant`, `tools_locked` | Correct declarations/grants before session creation. Catalogs and bindings are immutable. |
 | `invalid_tool_result` | The invocation, scope, or result is invalid, stale, or settled. Do not resend it as another invocation. |
 | `tool_binding_retired` | An invocation became uncertain. Reconcile its effects before explicitly creating a fresh session/binding. |
+| `questions_disabled`, `unsupported_question_protocol` | Enable supported question protocol 1 before creating sessions. |
+| `invalid_question_scope`, `invalid_question` | Correct the live invocation identity or definition. An ended invocation cannot open another form. |
+| `invalid_answer` | Inspect validation, scope, and storage diagnostics. A rejected answer does not consume an otherwise live question. |
+| `question_failed`, `question_capacity` | Inspect storage failure or bounded admission. Do not infer provider delivery or automatically replay the tool. |
 | Protocol corruption, host exit, or client request timeout | Treat the shared connection as failed. Active runs may be uncertain; do not automatically replay them. |
 
 `run_finished.status` and `reason` must be considered alongside `recording_error`.
@@ -98,8 +102,8 @@ tool authority. Hosted crash reconciliation and explicit recovery choices remain
 The stdio wire uses version 1 and rejects unsupported versions. New commands or
 optional fields can be added without changing existing meanings. A new unsolicited
 event kind needs negotiation or a wire-version change because the current client
-rejects unknown events. There is no capability-negotiation layer for these additions
-yet. Breaking host/client changes therefore require coordinated updates.
+rejects unknown events. Each callback family negotiates its supported protocol
+explicitly. Breaking host/client changes require coordinated updates.
 
 Database schema versions, inner receipt versions, and projection checkpoint versions
 are independent. Unknown receipt versions remain visible as unsupported evidence;
@@ -108,3 +112,9 @@ an automatic provider retry. H4 still requires packaged-client and upgrade evide
 Hosted tools negotiate callback protocol 1 before producing tool control events.
 Result acknowledgments confirm queuing; invocation receipts record persisted outcomes.
 See [hosted tools](host-tools.md).
+
+Hosted questions separately negotiate question protocol 1. Answer acknowledgments
+confirm an atomic stored answer, not delivery to the provider. An answer that wins
+the storage gate survives concurrent cancellation, but cannot resume an ended tool
+invocation. UI callbacks and saved actor labels do not establish human approval.
+See [hosted questions](host-questions.md).
