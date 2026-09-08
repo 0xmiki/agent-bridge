@@ -106,7 +106,9 @@ impl<S: Send + 'static> Worker<S> {
         factory: impl FnOnce() -> Result<S, StoreError> + Send + 'static,
     ) -> Result<Self, StoreError> {
         let permit = budget.reserve()?;
-        let (jobs, rx) = mpsc::sync_channel::<Job<S>>(1);
+        // One recorder plus up to four admitted tool callbacks can share a store.
+        // Keep fan-in bounded without rejecting that supported concurrency.
+        let (jobs, rx) = mpsc::sync_channel::<Job<S>>(8);
         let (ready, initialized) = mpsc::sync_channel(1);
         let failed = Arc::new(AtomicBool::new(false));
         let stop = failed.clone();

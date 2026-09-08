@@ -98,8 +98,9 @@ the documented versions; Claude authenticated checks remain deferred. A protocol
 capability declaration alone is not compatibility evidence. See
 [provider compatibility](providers.md) and [host verification](../host/verification.md).
 
-Application tools, structured questions, selected context, and validated results have
-Rust building blocks; their hosted application workflows are H2. Native resume and
+Application tools now have a [hosted workflow](host-tools.md). Structured questions,
+selected context, and validated results have Rust building blocks and remain H2
+host work. Native resume and
 portable restoration exist in Rust, while hosted restart reconciliation is H3.
 Review the [error and ownership contract](errors-and-ownership.md) before implementing
 retry, cancellation, or application shutdown behavior.

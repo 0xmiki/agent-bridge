@@ -55,6 +55,11 @@ Permission dismissal in this example is an application choice. Real applications
 can present the offered options. A cancellation acknowledgment records intent;
 the terminal event determines the outcome.
 
+For application tools, register `defineTool` declarations in `BridgeHost` options and
+select exact tools through `createSession({ ...options, allowTools: [...] })`. The host
+derives the MCP binding and routes calls independently of run observers. See
+[hosted tools](../docs/host-tools.md) and `tools-example.ts`.
+
 ## Wire contract
 
 Version 1 uses JSON lines on stdin/stdout, with stderr reserved for diagnostics.
@@ -64,6 +69,8 @@ run events also carry the original request ID as `stream`, plus session/run IDs.
 
 Methods: `ping`, `create_session`, `run`, `cancel`, `respond`, `pending_permissions`, `history`, `snapshot`,
 `changes`, `shutdown`.
+The opt-in tool callback protocol adds `configure_tools`, `tool_result`, `tool_call`,
+and `tool_cancel`. Registration alone does not authorize calls.
 The host owns identifiers and permission routing. The client imports no ACP SDK.
 `client.ts` defines the current DTOs. Record sequence/revision and pagination cursors
 are decimal strings to preserve precision. Payload data remains an untyped portable
@@ -95,7 +102,7 @@ requests it missed.
 Overflow fails explicitly; these are development limits, not a production QoS promise.
 
 Storage runs behind a [bounded worker boundary](../docs/runtime-isolation.md): twelve
-actual storage workers total, one queued job per session's store, and a 500 ms wait
+actual storage workers total, eight queued jobs per session's store, and a 500 ms wait
 budget for opening, each record operation, or a read query. Timed-out work retains
 its worker slot until it actually finishes. Host writes to the same configured
 absolute database path are serialized; other processes and path aliases still use
@@ -129,7 +136,7 @@ kernel-level I/O failures still need platform verification before wider claims.
 
 History pagination orders record creation; `snapshot` and `changes` support record
 updates and reconnecting projections. Reopening history
-does not reconnect a native session or recover uncertain work. Tools, structured
+does not reconnect a native session or recover uncertain work. Structured
 questions, context policies, restoration, and child execution currently have Rust
 APIs but are not exposed by this host. Session diagnostics and typed state projections
 also need a fuller client contract.

@@ -10,6 +10,8 @@ The host now offers [change cursors and typed state readers](docs/state-sync.md)
 including persisted projection checkpoints for reconnecting clients.
 [Typed receipt readers](docs/receipt-readers.md) expose bridge-owned evidence without
 application-specific extension JSON parsing.
+[Hosted application tools](docs/host-tools.md) connect granted MCP calls to live
+Bun handlers, with cancellation and authoritative invocation receipts.
 
 Read the [milestones](milestone.md) for current status and the next implementation
 target. The [philosophy](philosophy.md), [working model](docs/model.md), and roadmap

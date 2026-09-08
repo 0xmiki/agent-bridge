@@ -205,3 +205,84 @@ fn duplicate_or_non_object_definitions_are_rejected() {
         Err(ToolError::InvalidDefinition)
     );
 }
+
+#[cfg(feature = "dynamic-tools")]
+#[tokio::test]
+async fn runtime_schemas_validate_before_dispatch_and_keep_revision_grants() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let mut registry = ToolRegistry::default();
+    let schema = json!({"type":"object","properties":{"value":{"type":"integer","minimum":0}},"required":["value"],"additionalProperties":false});
+    registry
+        .register_dynamic(
+            ToolDefinition {
+                reference: ToolRef {
+                    name: "double".into(),
+                    revision: "v1".into(),
+                },
+                description: "Double".into(),
+                input_schema: schema.clone(),
+            },
+            move |_, value| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(json!({"value":value["value"].as_u64().unwrap()*2})) }
+            },
+        )
+        .unwrap();
+    let (mut grant, context) = binding();
+    assert_eq!(
+        registry.catalog(&grant, &context).unwrap()[0].input_schema,
+        schema
+    );
+    for value in [
+        json!({"value":"2"}),
+        json!({"value":-1}),
+        json!({"value":2,"scope":"forged"}),
+    ] {
+        assert!(matches!(
+            registry
+                .invoke("double", value, &grant, context.clone())
+                .await,
+            Err(ToolError::InvalidArguments(_))
+        ));
+    }
+    grant.tools[0].revision = "stale".into();
+    assert_eq!(
+        registry
+            .invoke("double", json!({"value":2}), &grant, context.clone())
+            .await,
+        Err(ToolError::NotGranted)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    grant.tools[0].revision = "v1".into();
+    assert_eq!(
+        registry
+            .invoke("double", json!({"value":2}), &grant, context)
+            .await
+            .unwrap(),
+        json!({"value":4})
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(feature = "dynamic-tools")]
+#[test]
+fn runtime_schema_registration_rejects_remote_refs_and_unimplemented_assertions() {
+    for schema in [
+        json!({"type":"object","$ref":"https://example.invalid/schema"}),
+        json!({"type":"object","properties":{"email":{"type":"string","format":"email"}}}),
+    ] {
+        let result = ToolRegistry::default().register_dynamic(
+            ToolDefinition {
+                reference: ToolRef {
+                    name: "double".into(),
+                    revision: "v1".into(),
+                },
+                description: "Double".into(),
+                input_schema: schema,
+            },
+            |_, _| async { Ok(json!(null)) },
+        );
+        assert!(matches!(result, Err(ToolError::InvalidSchema(_))));
+    }
+}

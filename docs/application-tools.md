@@ -2,7 +2,8 @@
 
 The optional `tools` feature adds a typed asynchronous tool registry. `mcp` adds
 an MCP adapter using the official Rust SDK, `rmcp`. Neither feature is required
-by the core or record store. This is the first M4 increment.
+by the core or record store. These are the Rust building blocks; the current H2
+[hosted workflow](host-tools.md) also reaches live Bun application handlers.
 
 ## Register a declaration and handler
 
@@ -93,10 +94,10 @@ session and slot. The handler generates a verification value and writes an execu
 log. The parent checks the agent's answer against that log and verifies recorded ACP
 tool activity. The value is not supplied in the prompt or process arguments.
 
-This subprocess example owns its own small application state. A Tauri application
-will need an appropriate host transport or IPC path to reach live UI-process state;
-that integration belongs to M6. Do not treat launching a subprocess as sharing Rust
-closures or memory with the parent.
+This subprocess example owns its own small application state. The hosted path now
+uses private IPC to reach the parent application. Launching a subprocess alone does
+not share Rust closures or memory. Tauri packaging remains deferred; see the
+[integration guide](integration.md) for hosted/direct Rust boundaries.
 
 The example uses a 90-second timeout and dismisses native permission requests.
 It passed with the existing automatic-approval configurations on September 6, 2026
@@ -105,9 +106,11 @@ deferred. The registry grant is enforced independently of those provider default
 
 Tests cover typed argument rejection, scope/revision checks, filtered discovery,
 duplicate registration, cancellation, MCP request routing, and spoofed metadata.
-The registry itself does not persist invocation receipts, deduplicate executions,
-or reconcile uncertain effects. Existing ACP recording preserves provider-observed
-tool activity; authoritative host execution bookkeeping belongs to M5.
+The registry itself does not persist invocation receipts or reconcile uncertain
+effects. ACP recording preserves provider-observed tool activity. The host now writes
+separate authoritative invocation receipts and rejects duplicate results; post-crash
+reconciliation remains H3. Optional `dynamic-tools` adds runtime schema registration
+with the subset and limits described in the hosted guide.
 
 Next M4 work covers structured questions, application approval orchestration,
 execution relationships, child authority, and concurrency/delegation limits.

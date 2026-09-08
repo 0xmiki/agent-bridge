@@ -1,8 +1,10 @@
 /** Experimental v1 client. No ACP SDK objects cross this boundary. */
 import { spawn } from "bun";
 import type { ReceiptView } from "./receipts";
+import { ToolClient, type ApplicationTool, type ToolReference } from "./tools";
+export { defineTool } from "./tools";
 
-export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean }
+export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean; allowTools?:readonly ToolReference[] }
 export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown }; receipt?: ReceiptView | null }
 export interface HistoryPage { records: StoredRecord[]; next_after: string | null; page_full: boolean }
 export interface ChangeCursor { epoch: string; session_id: string; position: string }
@@ -129,13 +131,23 @@ export class BridgeHost {
   readonly ready = this.readyState.promise;
   private error?: Error;
   private closing = false;
-  constructor(binary: string) {
+  private tools:ToolClient;
+  private configured:Promise<unknown>;
+  constructor(binary: string, options:{tools?:readonly ApplicationTool[]; toolTimeoutMs?:number} = {}) {
+    this.tools = new ToolClient(options.tools ?? [],params=>this.request("tool_result",params));
     this.process = startHost(binary);
+    this.configured = this.ready.then(async () => {
+      if (options.tools !== undefined) {
+        const result = await this.request("configure_tools",{callback_protocol:1,tools:this.tools.declarations(),timeout_ms:options.toolTimeoutMs ?? 30000});
+        if (result.callback_protocol !== 1) throw new Error("unsupported tool callback protocol");
+      }
+    });
+    this.configured.catch(()=>{});
     const reading = this.read();
     reading.catch(error => { this.fail(error); this.process.stdin.end(); });
     this.process.exited.then(async code => { await reading.catch(() => {}); this.fail(new Error(`host exited (${code})`)); });
   }
-  private fail(error: Error) { if (this.error) return; this.error = error; this.readyState.reject(error); for (const value of this.pending.values()) value.reject(error); this.pending.clear(); for (const run of this.runs.values()) run.fail(error); this.runs.clear(); }
+  private fail(error: Error) { if (this.error) return; this.error = error; this.tools.stop(); this.readyState.reject(error); for (const value of this.pending.values()) value.reject(error); this.pending.clear(); for (const run of this.runs.values()) run.fail(error); this.runs.clear(); }
   private async read() {
     const reader = this.process.stdout.getReader(); const decoder = new TextDecoder("utf-8", { fatal: true }); let buffer = "";
     try {
@@ -149,6 +161,8 @@ export class BridgeHost {
         if (frame.version !== 1) throw new Error("unsupported host protocol");
         if (typeof frame.id === "string") { const pending = this.pending.get(frame.id); if (!pending) throw new Error("uncorrelated host response"); this.pending.delete(frame.id); if (frame.ok) { this.runs.get(frame.id)?.bind(frame.result); pending.resolve(frame.result); } else pending.reject(Object.assign(new Error(frame.error.message), { code: frame.error.code })); }
         else if (frame.event === "ready") this.readyState.resolve();
+        else if (frame.event === "tool_call") this.tools.accept(frame);
+        else if (frame.event === "tool_cancel") this.tools.cancel(frame);
         else if (frame.stream) { const run = this.runs.get(frame.stream); if (!run) throw new Error("uncorrelated run event"); run.accept(frame); if (frame.event === "run_finished") this.runs.delete(frame.stream); }
         else if (frame.event === "protocol_error") throw new Error(frame.code);
         else if (frame.event !== "session_error") throw new Error("unknown host event");
@@ -171,7 +185,14 @@ export class BridgeHost {
   }
   /** Low-level versioned command access for contract tests. */
   request(method: string, params: unknown = {}) { return this.send(method, params, `request-${++this.nextId}`); }
-  async createSession(options: SessionOptions) { await this.ready; const result = await this.request("create_session", options); return new HostSession(this, result.session_id, result.slot_id, options.database); }
+  async createSession(options: SessionOptions) {
+    await this.configured;
+    const {allowTools = [], ...launch} = options;
+    const allow = allowTools.map(({name,revision})=>({name,revision}));
+    const result = await this.request("create_session", {...launch,allow_tools:allow});
+    this.tools.bind(result.tool_binding_id,result.session_id,result.slot_id,allow);
+    return new HostSession(this, result.session_id, result.slot_id, options.database);
+  }
   startRun(sessionId: string, prompt: string) {
     const id = `request-${++this.nextId}`;
     const start = deferred<{ run_id: string }>();
@@ -182,5 +203,5 @@ export class BridgeHost {
   history(database: string, sessionId: string, after?: string, limit = 1000): Promise<HistoryPage> { return this.request("history", { database, session_id: sessionId, after, limit }); }
   snapshot(database: string, sessionId: string, cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.request("snapshot", { database, session_id: sessionId, cursor, after, limit }); }
   changes(database: string, sessionId: string, cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.request("changes", { database, session_id: sessionId, cursor, limit }); }
-  async close() { if (!this.closing && !this.error) { this.closing = true; await this.request("shutdown"); } this.process.stdin.end(); const code = await this.process.exited; if (code !== 0) throw new Error(`host exited (${code})`); }
+  async close() { this.tools.stop(); if (!this.closing && !this.error) { this.closing = true; await this.request("shutdown"); } this.process.stdin.end(); const code = await this.process.exited; if (code !== 0) throw new Error(`host exited (${code})`); }
 }

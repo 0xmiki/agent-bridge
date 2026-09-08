@@ -54,6 +54,9 @@ is safe. Unknown error codes must remain visible rather than becoming success.
 | `session_limit`, `history_limit`, `session_unavailable` | Respect bounded admission. Do not create an unbounded retry loop. |
 | `history_failed` | Keep the last committed projection/cursor pair; retry the read when its cause is resolved. It must not trigger generation. |
 | `subscriber_lagged`, `subscriber_limit` | Handle the affected local observer. Reattach and synchronize saved state; query live pending permissions separately. |
+| `invalid_tools`, `invalid_tool_grant`, `tools_locked` | Correct declarations/grants before session creation. Catalogs and bindings are immutable. |
+| `invalid_tool_result` | The invocation, scope, or result is invalid, stale, or settled. Do not resend it as another invocation. |
+| `tool_binding_retired` | An invocation became uncertain. Reconcile its effects before explicitly creating a fresh session/binding. |
 | Protocol corruption, host exit, or client request timeout | Treat the shared connection as failed. Active runs may be uncertain; do not automatically replay them. |
 
 `run_finished.status` and `reason` must be considered alongside `recording_error`.
@@ -102,3 +105,6 @@ Database schema versions, inner receipt versions, and projection checkpoint vers
 are independent. Unknown receipt versions remain visible as unsupported evidence;
 a future checkpoint version is rejected. Neither behavior should be converted into
 an automatic provider retry. H4 still requires packaged-client and upgrade evidence.
+Hosted tools negotiate callback protocol 1 before producing tool control events.
+Result acknowledgments confirm queuing; invocation receipts record persisted outcomes.
+See [hosted tools](host-tools.md).

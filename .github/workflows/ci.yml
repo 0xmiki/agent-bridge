@@ -16,6 +16,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo check --locked --no-default-features
       - run: cargo check --locked --no-default-features --features receipts
+      - run: cargo check --locked --no-default-features --features dynamic-tools
       - run: cargo test --locked --all-features --all-targets
       - run: cargo clippy --locked --all-features --all-targets -- -D warnings
       - run: cargo build --locked --features host --bin agent-bridge-host --example rust_integration

@@ -6,7 +6,8 @@ synchronous `RecordStore` trait or make every storage adapter asynchronous.
 ## Ownership and deadlines
 
 The host executes SQLite operations outside its provider runtimes. Each session has
-a storage worker with one queued command; read requests run separately. A shared
+a storage worker with eight queued commands; read requests run separately. H2 expanded
+the queue to accommodate the recorder and up to four admitted tool callbacks. A shared
 budget admits at most twelve actual storage workers, including work whose caller
 has already timed out. Exhaustion returns `StorageOverloaded`; it does not spawn
 replacement workers without a free slot.

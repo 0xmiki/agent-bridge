@@ -1,4 +1,10 @@
 import type { StoredRecord } from "./client";
+import type { Json, ToolReference } from "./tools";
+
+interface InvocationIdentity {version:1;invocation_id:string;binding_id:string;scope:{session:string;slot:string};tool:ToolReference;issuer:string;subject:string}
+export type ToolOutcome = {kind:"success";value:Json}|{kind:"error";message:string};
+export type ToolInvocationReceipt = InvocationIdentity & ({state:"dispatch_attempted";input:Json}|{state:"returned";outcome:ToolOutcome}|{state:"unknown";reason:string});
+type ToolInvocationView = InvocationIdentity & ({state:"dispatch_attempted"|"returned"}|{state:"unknown";reason:string});
 
 export interface ResourceRevision { id: string; revision: string }
 export interface RecordRevision { id: string; revision: string }
@@ -45,13 +51,19 @@ type OtherReceipt =
   {kind:"configuration_report";data:{confirmed:Record<string,ConfigurationValue>|null}} |
   {kind:"unsupported";data:{name:string;version:number}} |
   {kind:"invalid";data:{name:string;reason:string}};
-export type Receipt = OtherReceipt | {kind:"input";data:PreparedInput|InputProgress} | {kind:"result_contract";data:ResultContract};
+export type Receipt = OtherReceipt | {kind:"input";data:PreparedInput|InputProgress} | {kind:"result_contract";data:ResultContract} | {kind:"tool_invocation";data:ToolInvocationReceipt};
 /** Rust-validated metadata; request text stays once in the original record payload. */
-export type ReceiptView = OtherReceipt | {kind:"input";data:Omit<PreparedInput,"wire_text">|InputProgress} | {kind:"result_contract";data:Omit<ResultContract,"wire_text">};
+export type ReceiptView = OtherReceipt | {kind:"input";data:Omit<PreparedInput,"wire_text">|InputProgress} | {kind:"result_contract";data:Omit<ResultContract,"wire_text">} | {kind:"tool_invocation";data:ToolInvocationView};
 
 export function readReceipt(record: StoredRecord): Receipt | undefined {
   const receipt = record.receipt;
   if (!receipt) return undefined;
+  if (receipt.kind === "tool_invocation") {
+    const raw = (record.payload.data as {data:Record<string,unknown>}).data;
+    if (receipt.data.state === "dispatch_attempted") return {kind:"tool_invocation",data:{...receipt.data,state:"dispatch_attempted",input:raw.input as Json}};
+    if (receipt.data.state === "returned") return {kind:"tool_invocation",data:{...receipt.data,state:"returned",outcome:raw.outcome as ToolOutcome}};
+    return receipt as Receipt;
+  }
   if (receipt.kind === "result_contract" || (receipt.kind === "input" && receipt.data.state === "prepared")) {
     const wireText = (record.payload.data as {data?:{wire_text?:unknown}})?.data?.wire_text;
     if (typeof wireText !== "string") return {kind:"invalid",data:{name:receipt.kind,reason:"missing request text in receipt payload"}};

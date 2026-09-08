@@ -42,26 +42,31 @@ exposes typed adapter events; the Bun client uses host DTOs. Acceptance:
 H1 acceptance, checks, and retained limitations are recorded in
 [h1-acceptance.md](docs/h1-acceptance.md). This completes the integration proof; it
 does not release an alpha or claim equivalent runtime guarantees for every embedding
-path. Next slice: H2's first application tool through the host and client, with an
-actual MCP binding derived from the approved grant and fixture invocation/cancellation
-checks. Expand questions, context, and result handling after that path is established.
+path. H2 below tracks hosted interactions. Its first tool workflow is implemented;
+questions, context, and result handling are the remaining work.
 
 Test hygiene: disposable Codex checks must request provider session cleanup after
 verification. `host/example.ts` enables this automatically for codex-acp launches;
 custom wrappers must set `AGENT_BRIDGE_CODEX_TEST=1`. The pinned adapter archives the
 thread out of active history. Cleanup failure must be reported, not silently ignored.
 
-## H2 — Application interactions (planned)
+## H2 — Application interactions (in progress)
 
 Outcome: tools and questions use the same integration. Acceptance: quality gate 4.
 
-- [ ] Host/client tools, questions, selected context, and validated results.
-- [ ] Mechanically bind tools from grants; reject stale and cross-session input.
-- [ ] Handler cancellation, bounded active work, and atomic duplicate decisions.
-- [ ] Real application tool invocation through the host per supported provider.
+- [x] Hosted application tools with runtime schemas and live application handlers.
+- [x] Derive MCP bindings from grants; reject stale revisions, wrong capabilities, and cross-scope results.
+- [x] Tool cancellation, bounded calls, once-only result acceptance, and typed receipts; unknown outcomes retire the binding.
+- [x] Real hosted tool invocation with OpenCode and Codex, including Codex test-thread cleanup.
+- [ ] Hosted structured questions and atomic answer workflows.
+- [ ] Hosted selected-context delivery and validated agent results.
 
 Use existing Rust primitives. Add child APIs when an acceptance scenario establishes
 application ownership; a general multi-agent scheduler is not required.
+The first tool workflow is documented in [host-tools.md](docs/host-tools.md). It uses
+Unix IPC with Linux verification and a bounded runtime-schema subset. Next slice:
+hosted structured questions, reusing application callbacks and recorded interactions.
+This does not complete H2 or the post-crash recovery contract.
 
 ## H3 — Local restart contract (planned)
 

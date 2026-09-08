@@ -11,6 +11,13 @@ pub fn view(payload: &Payload) -> Value {
             if let Some(data) = value["data"].as_object_mut() {
                 data.remove("wire_text");
             }
+            if value["kind"] == "tool_invocation" {
+                let data = value["data"].as_object_mut().unwrap();
+                // Arbitrary application JSON is retained once and must not have
+                // its numbers converted into metadata counters.
+                data.remove("input");
+                data.remove("outcome");
+            }
             decimal_numbers(&mut value);
             value
         }

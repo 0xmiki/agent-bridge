@@ -90,8 +90,12 @@ shared transport or fairness between provider output streams.
 
 Rust tool/question/grant APIs exist. Host tests reject foreign permission tokens,
 stale run IDs, invalid options, and duplicate responses while preserving valid pending
-requests. Tokens are unique across the host. Host tools,
-questions, and automatic binding remain to be implemented.
+requests. Tokens are unique across the host. Hosted tools now derive MCP configuration
+from immutable grants, validate runtime schemas, route callbacks outside observer
+queues, and persist invocation receipts. Tests cover scope/capability spoofing,
+concurrency limits, deadlines, cancellation, recording failures, and rejected retries
+after unknown outcomes. OpenCode and Codex passed the live callback/token check.
+Hosted questions and the remaining context/result workflows are still open in H2.
 
 ## 5. Restart and uncertainty
 

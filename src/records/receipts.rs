@@ -158,6 +158,32 @@ pub struct ConfigurationReport {
     pub confirmed: Option<ConfigValues>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolOutcome {
+    Success { value: Value },
+    Error { message: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ToolInvocationStage {
+    DispatchAttempted { input: Value },
+    Returned { outcome: ToolOutcome },
+    Unknown { reason: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolInvocationReceipt {
+    pub version: u32,
+    pub invocation_id: String,
+    pub binding_id: String,
+    pub scope: crate::ToolScope,
+    pub tool: crate::ToolRef,
+    pub issuer: ActorId,
+    pub subject: ActorId,
+    #[serde(flatten)]
+    pub stage: ToolInvocationStage,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Receipt {
@@ -166,6 +192,7 @@ pub enum Receipt {
     ResultContract(ResultContract),
     ResultValidation(ResultValidation),
     ConfigurationReport(ConfigurationReport),
+    ToolInvocation(Box<ToolInvocationReceipt>),
     Unsupported { name: String, version: u32 },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +258,7 @@ pub fn read(payload: &Payload) -> Result<Option<Receipt>, ReceiptError> {
             "result_contract",
             "result_validation",
             "configuration_report",
+            "tool_invocation",
         ]
         .contains(&name.as_str())
     {
@@ -256,7 +284,7 @@ pub fn read(payload: &Payload) -> Result<Option<Receipt>, ReceiptError> {
     let supported = match name.as_str() {
         "input_receipt" => version <= 4,
         "restoration" => version <= 3,
-        "result_contract" | "result_validation" => version == 1,
+        "result_contract" | "result_validation" | "tool_invocation" => version == 1,
         _ => false,
     };
     if !supported {
@@ -266,6 +294,18 @@ pub fn read(payload: &Payload) -> Result<Option<Receipt>, ReceiptError> {
         }));
     }
     let receipt = match name.as_str() {
+        "tool_invocation" => {
+            let value: ToolInvocationReceipt = decode(name, data)?;
+            require(
+                name,
+                !value.invocation_id.trim().is_empty()
+                    && !value.binding_id.trim().is_empty()
+                    && !value.tool.name.trim().is_empty()
+                    && !value.tool.revision.trim().is_empty(),
+                "invalid invocation identity",
+            )?;
+            Receipt::ToolInvocation(Box::new(value))
+        }
         "input_receipt" => {
             let value: InputReceipt = decode(name, data)?;
             if let InputStage::Prepared(input) = &value.stage {

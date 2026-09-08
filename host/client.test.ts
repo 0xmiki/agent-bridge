@@ -2,10 +2,12 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
+import {createConnection} from "node:net";
 import { join, resolve } from "node:path";
 import { BridgeHost, type HostRun, type RunEvent, type StoredRecord } from "./client";
 import { SessionState } from "./state";
 import { readReceipt } from "./receipts";
+import {defineTool, type ToolContext, type Json} from "./tools";
 
 const root = resolve(import.meta.dir, "..");
 const binary = process.env.AGENT_BRIDGE_HOST ?? join(root, "target/debug/agent-bridge-host");
@@ -224,6 +226,10 @@ test("failed provider startup leaves the host usable", async () => {
 }, 30000);
 
 function stopped(pid: number) {
+  if (process.platform !== "linux") {
+    try { process.kill(pid,0); return false; }
+    catch(error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+  }
   try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.startsWith("Z"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
 }
@@ -614,7 +620,7 @@ for (const mode of ["chat", "prompt-error"] as const) {
       expect(await within(child.exited, 10000)).toBe(mode === "chat" ? 0 : 1);
       const stdout = await output; const stderr = await errors;
       expect(readFileSync(deleted, "utf8")).toBe('"native-1"');
-      expect(() => process.kill(Number(readFileSync(pid, "utf8")), 0)).toThrow();
+      await until(() => stopped(Number(readFileSync(pid, "utf8"))));
       if (mode === "chat") { expect(stdout).toContain("Hello world"); expect(stdout).toContain("Verified"); }
       else expect(stderr).toContain("fixture prompt error");
       const sql = new Database(database, {readonly:true});
@@ -626,3 +632,215 @@ for (const mode of ["chat", "prompt-error"] as const) {
     }
   }, 15000);
 }
+
+const lookupInput = {
+  jsonSchema:{type:"object",properties:{key:{type:"string"}},required:["key"],additionalProperties:false} as Json,
+  parse(value:unknown) { if (!value || typeof value !== "object" || typeof (value as {key?:unknown}).key !== "string") throw new Error("key required"); return value as {key:string}; },
+};
+function toolAgent(name:string,env:Record<string,string> = {}) {
+  return {...options(name),executable:process.execPath,args:[join(root,"host/tool-agent.fixture.ts")],env};
+}
+function invocationReceipts(records:StoredRecord[]) {
+  return records.map(readReceipt).filter((r):r is Extract<NonNullable<ReturnType<typeof readReceipt>>,{kind:"tool_invocation"}>=>r?.kind==="tool_invocation");
+}
+
+test("application tool uses a grant-derived MCP binding and authoritative receipts", async () => {
+  const calls:ToolContext[] = []; const token = crypto.randomUUID();
+  const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Look up project data",input:lookupInput,
+    execute(input,context) { expect(input.key).toBe("project"); calls.push(context); return {token,session:context.scope.sessionId,count:7}; }});
+  let hiddenCalls = 0;
+  const hidden = defineTool({name:"hidden",revision:"v1",description:"Unselected tool",input:lookupInput,execute(){hiddenCalls++;return null;}});
+  const host = new BridgeHost(binary,{tools:[lookup,hidden]});
+  const catalog = join(directory,"tools-catalog"); const early = join(directory,"tools-early"); const helper = join(directory,"tools-helper.pid");
+  const config = toolAgent("tools",{BRIDGE_TEST_TOOL_CATALOG:catalog,BRIDGE_TEST_EARLY_CALL:early,BRIDGE_TEST_HELPER_PID:helper});
+  let saved:StoredRecord[] = []; let id = "";
+  try {
+    await expect(host.createSession({...config,allowTools:[{name:lookup.name,revision:"stale"}]})).rejects.toHaveProperty("code","invalid_tool_grant");
+    const session = await host.createSession({...config,allowTools:[lookup]}); id = session.id;
+    expect(JSON.parse(readFileSync(catalog,"utf8")).tools.map((tool:{name:string})=>tool.name)).toEqual(["project_lookup"]);
+    expect(JSON.parse(readFileSync(early,"utf8")).isError).toBe(true);
+    expect(calls).toHaveLength(0);
+    const run = session.run("lookup"); run.events.close();
+    expect((await within(run.completed,10000)).status).toBe("completed");
+    expect(calls).toHaveLength(1); expect(hiddenCalls).toBe(0);
+    expect(calls[0]!.scope).toEqual({sessionId:session.id,slotId:session.slotId});
+    const state = new SessionState(config.database,session.id); await state.sync(host);
+    saved = state.items.map(item=>item.record);
+    const receipts = invocationReceipts(saved);
+    expect(receipts.map(r=>r.data.state)).toEqual(["dispatch_attempted","returned"]);
+    const returned = receipts[1]!.data;
+    expect(returned.state === "returned" && returned.outcome).toEqual({kind:"success",value:{token,session:session.id,count:7}});
+    expect(saved.filter(record=>record.receipt?.kind==="tool_invocation").every(record=>record.run_id===null && record.actor==="host")).toBe(true);
+    expect(saved.some(record=>record.payload.type==="tool")).toBe(true);
+    expect(state.items.some(item=>item.kind==="message" && item.role==="agent" && item.text.includes(token))).toBe(true);
+    await expect(host.request("tool_result",{call_id:calls[0]!.invocationId,binding_id:calls[0]!.bindingId,session_id:session.id,slot_id:session.slotId,outcome:{kind:"success",value:null}})).rejects.toHaveProperty("code","invalid_tool_result");
+  } finally { await host.close(); }
+  expect(stopped(Number(readFileSync(helper,"utf8")))).toBe(true);
+  const reopened = new BridgeHost(binary);
+  try { expect((await reopened.history(config.database,id)).records).toEqual(saved); }
+  finally { await reopened.close(); }
+},20000);
+
+test("invalid tool arguments never reach the application handler", async () => {
+  let calls = 0;
+  const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Lookup",input:lookupInput,execute(){calls++;return null;}});
+  const host = new BridgeHost(binary,{tools:[lookup]});
+  try {
+    const session = await host.createSession({...toolAgent("tools-invalid",{BRIDGE_TEST_TOOL_INPUT:'{"key":7,"session_id":"spoofed"}'}),allowTools:[lookup]});
+    const run = session.run("lookup"); const answer = await within(text(run),10000);
+    expect(answer).toContain("registered schema"); expect(calls).toBe(0);
+    expect(invocationReceipts((await session.history()).records)).toHaveLength(0);
+  } finally { await host.close(); }
+},20000);
+
+test("tool cancellation reaches the handler and rejects wrong-scope and late results", async () => {
+  let started!: (context:ToolContext)=>void; const called = new Promise<ToolContext>(resolve=>started=resolve);
+  let aborted!: ()=>void; const cancelled = new Promise<void>(resolve=>aborted=resolve);
+  let release!: ()=>void; const held = new Promise<void>(resolve=>release=resolve);
+  const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Wait",input:lookupInput,
+    async execute(_,context) { context.signal.addEventListener("abort",()=>aborted(),{once:true}); started(context); await held; return {late:true}; }});
+  const host = new BridgeHost(binary,{tools:[lookup]});
+  try {
+    const session = await host.createSession({...toolAgent("tools-cancel"),allowTools:[lookup]});
+    const run = session.run("wait"); const stream = text(run);
+    const context = await within(called,10000);
+    const response = {call_id:context.invocationId,binding_id:context.bindingId,session_id:session.id,slot_id:session.slotId,outcome:{kind:"success",value:{forged:true}}};
+    await expect(host.request("tool_result",{...response,slot_id:"wrong-slot"})).rejects.toHaveProperty("code","invalid_tool_result");
+    await run.cancel(); await within(cancelled,5000); await within(stream,5000);
+    expect((await run.completed).status).toBe("cancelled");
+    release();
+    await expect(host.request("tool_result",response)).rejects.toHaveProperty("code","invalid_tool_result");
+    await within((async()=>{for(;;){const receipts=invocationReceipts((await session.history()).records);if(receipts.some(r=>r.data.state==="unknown"))break;await Bun.sleep(5);}})(),5000);
+    expect(invocationReceipts((await session.history()).records).map(r=>r.data.state)).toEqual(["dispatch_attempted","unknown"]);
+    expect(await host.request("ping")).toEqual({alive:true});
+  } finally { release(); await host.close(); }
+},20000);
+
+test("tool deadlines keep effects uncertain and require a fresh binding for another invocation", async () => {
+  let release!: ()=>void; const held = new Promise<void>(resolve=>release=resolve);
+  const calls:ToolContext[] = [];
+  const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Deadline test",input:lookupInput,
+    async execute(_,context){calls.push(context);if(calls.length===1)await held;return {attempt:calls.length};}});
+  const host = new BridgeHost(binary,{tools:[lookup],toolTimeoutMs:100});
+  const retry = join(directory,"tools-automatic-retry");
+  try {
+    const session = await host.createSession({...toolAgent("tools-deadline",{BRIDGE_TEST_RETRY_RESULT:retry}),allowTools:[lookup]});
+    const run = session.run("wait"); expect(await within(text(run),10000)).toContain("timed out");
+    expect(calls).toHaveLength(1); expect(calls[0]!.signal.aborted).toBe(true);
+    expect(JSON.parse(readFileSync(retry,"utf8")).isError).toBe(true);
+    expect(invocationReceipts((await session.history()).records).map(r=>r.data.state)).toEqual(["dispatch_attempted","unknown"]);
+    release();
+    await expect(session.run("must not reuse uncertain binding").started).rejects.toHaveProperty("code","tool_binding_retired");
+    const fresh=await host.createSession({...toolAgent("tools-after-deadline"),allowTools:[lookup]});
+    expect(JSON.parse(await text(fresh.run("explicit new assignment")))).toEqual({attempt:2});
+    expect(calls[1]!.invocationId).not.toBe(calls[0]!.invocationId);
+    expect(calls[1]!.bindingId).not.toBe(calls[0]!.bindingId);
+    expect(invocationReceipts((await session.history()).records).map(r=>r.data.state)).toEqual(["dispatch_attempted","unknown"]);
+    expect(invocationReceipts((await fresh.history()).records).map(r=>r.data.state)).toEqual(["dispatch_attempted","returned"]);
+  } finally {release();await host.close();}
+},20000);
+
+for (const blocked of ["dispatch_attempted","returned"] as const) {
+  test(`tool evidence failure at ${blocked} cannot become an unrecorded success`, async () => {
+    let calls = 0;
+    const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Evidence test",input:lookupInput,execute(){calls++;return {done:true};}});
+    const host = new BridgeHost(binary,{tools:[lookup]});
+    try {
+      const config = toolAgent(`tools-evidence-${blocked}`);
+      const session = await host.createSession({...config,allowTools:[lookup]});
+      const sql = new Database(config.database);
+      sql.exec(`CREATE TRIGGER fail_tool_evidence BEFORE INSERT ON agent_bridge_records
+        WHEN json_extract(NEW.payload_json,'$.data.data.name') = 'tool_invocation'
+        AND json_extract(NEW.payload_json,'$.data.data.data.state') = '${blocked}'
+        BEGIN SELECT RAISE(ABORT,'injected receipt write failure'); END;`);
+      sql.close();
+      const run = session.run("lookup"); expect(await within(text(run),10000)).toContain("evidence unavailable");
+      expect(calls).toBe(blocked === "dispatch_attempted" ? 0 : 1);
+      expect(invocationReceipts((await session.history()).records).some(r=>r.data.state==="returned")).toBe(false);
+      expect(await host.request("ping")).toEqual({alive:true});
+    } finally {await host.close();}
+  },20000);
+}
+
+test("ungranted MCP calls and unsupported schemas do not launch application handlers", async () => {
+  let calls = 0;
+  const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Lookup",input:lookupInput,execute(){calls++;return null;}});
+  const hidden = defineTool({name:"hidden",revision:"v1",description:"Hidden",input:lookupInput,execute(){calls++;return null;}});
+  const host = new BridgeHost(binary,{tools:[lookup,hidden]});
+  try {
+    const session = await host.createSession({...toolAgent("tools-not-granted",{BRIDGE_TEST_TOOL_NAME:"hidden"}),allowTools:[lookup]});
+    expect(await text(session.run("try hidden"))).toContain("NotGranted");
+    expect(calls).toBe(0);
+    await expect(host.request("configure_tools",{callback_protocol:1,tools:[],timeout_ms:1000})).rejects.toHaveProperty("code","tools_locked");
+  } finally {await host.close();}
+  const invalid = defineTool({...lookup,input:{...lookupInput,jsonSchema:{type:"object",$ref:"https://example.invalid/schema"}} ,execute(){calls++;return null;}});
+  const other = new BridgeHost(binary,{tools:[invalid]});
+  const pid = join(directory,"invalid-schema.pid");
+  try {await expect(other.createSession(toolAgent("tools-invalid-schema",{BRIDGE_TEST_PID:pid}))).rejects.toHaveProperty("code","invalid_tools");expect(existsSync(pid)).toBe(false);}
+  finally {await other.close();}
+},20000);
+
+test("an MCP endpoint rejects another binding's capability and is removed on shutdown", async () => {
+  const lookup = defineTool({name:"project_lookup",revision:"v1",description:"Lookup",input:lookupInput,execute(){return null;}});
+  const host = new BridgeHost(binary,{tools:[lookup]});
+  const configs = [join(directory,"binding-a.json"),join(directory,"binding-b.json")];
+  let endpoint = "";
+  try {
+    await Promise.all(configs.map((path,i)=>host.createSession({...toolAgent(`binding-auth-${i}`,{BRIDGE_TEST_MCP_CONFIG:path}),allowTools:[lookup]})));
+    const envs = configs.map(path=>Object.fromEntries(JSON.parse(readFileSync(path,"utf8")).env.map((v:{name:string;value:string})=>[v.name,v.value])));
+    endpoint = envs[0]!.AGENT_BRIDGE_MCP_ENDPOINT;
+    let received = "";
+    await within(new Promise<void>((resolve,reject)=>{
+      const socket = createConnection(endpoint,()=>socket.write(JSON.stringify({capability:envs[1]!.AGENT_BRIDGE_MCP_CAPABILITY})+"\n"));
+      socket.on("data",bytes=>received+=bytes.toString());socket.on("close",()=>resolve());socket.on("error",reject);
+      socket.setTimeout(2000,()=>{socket.destroy();reject(new Error("authentication did not close connection"));});
+    }),3000);
+    expect(received).toBe("");expect(await host.request("ping")).toEqual({alive:true});
+  } finally {await host.close();}
+  expect(existsSync(endpoint)).toBe(false);
+},15000);
+
+test("application parsers cannot coerce input and non-JSON results are reported as errors", async () => {
+  for (const invalid of ["coercion","result"] as const) {
+    let calls=0;
+    const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Validation test",
+      input:{...lookupInput,parse(value:unknown){const input=lookupInput.parse(value);return invalid==="coercion" ? {key:input.key.toUpperCase()} : input;}},
+      execute(){calls++;return NaN;}});
+    const host=new BridgeHost(binary,{tools:[lookup]});
+    try {
+      const session=await host.createSession({...toolAgent(`tools-client-${invalid}`),allowTools:[lookup]});
+      const answer=await text(session.run("lookup"));
+      expect(answer).toContain(invalid==="coercion" ? "must not coerce" : "safe JSON");
+      expect(calls).toBe(invalid==="coercion" ? 0 : 1);
+      const last=invocationReceipts((await session.history()).records).at(-1)!.data;
+      expect(last.state==="returned" && last.outcome.kind).toBe("error");
+      expect(await host.request("ping")).toEqual({alive:true});
+    } finally {await host.close();}
+  }
+},20000);
+
+test("a binding admits four concurrent calls and rejects excess work without dispatch", async () => {
+  let release!:()=>void;const held=new Promise<void>(resolve=>release=resolve);
+  const calls:ToolContext[]=[];
+  const lookup=defineTool({name:"project_lookup",revision:"v1",description:"Concurrent lookup",input:lookupInput,
+    async execute(_,context){calls.push(context);await held;return {invocation:context.invocationId};}});
+  const host=new BridgeHost(binary,{tools:[lookup]});
+  const marker=join(directory,"tool-capacity");
+  try {
+    const session=await host.createSession({...toolAgent("tools-capacity",{BRIDGE_TEST_PARALLEL_TOOLS:"1",BRIDGE_TEST_CAPACITY_READY:marker}),allowTools:[lookup]});
+    const run=session.run("parallel lookup");const streamed=text(run);
+    await until(()=>calls.length===4 && existsSync(marker),10000);
+    expect(await host.request("ping")).toEqual({alive:true});release();
+    const results=JSON.parse(await within(streamed,10000)) as {isError?:boolean}[];
+    expect(results.filter(result=>result.isError)).toHaveLength(1);
+    expect(calls).toHaveLength(4);expect(new Set(calls.map(call=>call.invocationId)).size).toBe(4);
+    const receipts=invocationReceipts((await session.history()).records);
+    expect(receipts).toHaveLength(8);
+    for(const call of calls){
+      const pair=receipts.filter(receipt=>receipt.data.invocation_id===call.invocationId);
+      expect(pair.map(receipt=>receipt.data.state)).toEqual(["dispatch_attempted","returned"]);
+      const returned=pair[1]!.data;
+      expect(returned.state==="returned" && returned.outcome).toEqual({kind:"success",value:{invocation:call.invocationId}});
+    }
+  } finally {release();await host.close();}
+},20000);

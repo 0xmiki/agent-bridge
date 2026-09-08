@@ -196,3 +196,35 @@ TypeScript checking, dependency-free core compilation, and standalone receipt-re
 compilation passed locally. This increment used fixtures and created no live Codex
 threads. H1's acceptance scope and remaining boundaries are documented in
 [the acceptance audit](../docs/h1-acceptance.md).
+
+## H2 hosted application tools, September 8
+
+192 Rust tests and thirty-five Bun host tests with 755 assertions passed locally.
+Clippy, rustfmt, TypeScript checking, dependency-free core compilation, standalone
+receipt readers, and standalone dynamic-tool registration also passed.
+
+The fixture agent uses the actual MCP stdio helper and Rust server. Tests verify
+filtered discovery, rejected startup calls, stale grants, invalid arguments, spoofed
+MCP metadata, cross-binding capabilities, wrong-scope/duplicate/late results, and
+independent callback delivery when run observers are closed. Four concurrent calls
+produce separately correlated receipts; a fifth is rejected before dispatch.
+
+Failure checks cover callback deadlines, cancellation reaching the application's
+signal, ignored late results, rejected provider retries after uncertainty, fresh-binding
+requirements, and failed dispatch/return receipt writes. Application input coercion
+and non-JSON output cannot become successful tool results. The store queue was raised
+from one to eight jobs to support the recorder plus four admitted tool callbacks.
+
+Live checks passed with OpenCode 1.18.25 and Codex CLI 0.153.4 through codex-acp 1.10.0.
+Each invoked the Bun handler once and returned its fresh verification token, which
+was absent from the prompt and declaration. Exact reopened history contained nine
+records for OpenCode and thirteen for Codex. Codex session cleanup succeeded, and a
+read-only check of the exact test thread confirmed `archived = 1`.
+
+The existing Rust-example PID check was changed from immediate PID disappearance to
+the bounded stopped-process check used elsewhere. It still fails if the provider
+remains running; exited Linux zombies are treated as stopped while awaiting OS reaping.
+
+These results establish the first hosted-tool workflow, not complete H2. Hosted
+questions, selected context, validated agent results, dynamic binding changes, other
+platforms, and post-crash reconciliation remain open.

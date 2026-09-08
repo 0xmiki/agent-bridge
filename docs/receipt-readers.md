@@ -29,6 +29,7 @@ including its actor, run ID, and raw extension payload.
 | `result_contract` | Version 1 | Requested contract and host validation settings |
 | `result_validation` | Version 1 | Valid/rejected decision with source revisions and rejection detail |
 | `configuration_report` | Existing unversioned format | Optional provider-reported configuration values |
+| `tool_invocation` | Version 1 | Host dispatch/return/unknown evidence with binding and invocation identity |
 
 Unknown namespaces or names return `None`; the extension remains available through
 the original payload. Future versions return `Receipt::Unsupported`. Missing or
@@ -62,6 +63,9 @@ Counters and record revisions in the host view are decimal strings, so values ab
 JavaScript's safe-integer range stay exact. Inner format versions remain numbers.
 Request text is sent once in the original payload; the TypeScript reader exposes
 `wire_text` from there. Unknown raw JSON is not interpreted by the receipt reader.
+Tool input and outcome JSON are also retained once in the original payload; their
+application numbers remain JSON numbers. Invocation receipts do not guess a parent
+run from MCP arrival timing.
 
 Projection checkpoints now carry `projection_version: 1`. Unversioned checkpoints
 trigger a new scan to obtain receipt metadata, even for records whose revisions have

@@ -5,6 +5,8 @@ use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeMap, error::Error, fmt, future::Future, pin::Pin, sync::Arc};
+#[cfg(feature = "dynamic-tools")]
+mod dynamic;
 pub use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,7 @@ pub struct ToolInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolError {
     InvalidDefinition,
+    InvalidSchema(String),
     DuplicateDefinition,
     NotGranted,
     UnknownTool,

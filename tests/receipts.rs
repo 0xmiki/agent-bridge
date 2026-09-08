@@ -145,3 +145,38 @@ fn known_invalid_versions_and_missing_evidence_do_not_turn_into_defaults() {
         Some(Receipt::Input(_))
     ));
 }
+
+#[test]
+fn invocation_receipts_keep_returned_results_separate_from_uncertain_effects() {
+    let base = json!({"version":1,"invocation_id":"call","binding_id":"binding","scope":{"session":"s","slot":"slot"},"tool":{"name":"lookup","revision":"v1"},"issuer":"host","subject":"assistant"});
+    for (state, fields) in [
+        ("dispatch_attempted", json!({"input":{"key":"project"}})),
+        (
+            "returned",
+            json!({"outcome":{"kind":"success","value":{"count":7}}}),
+        ),
+        (
+            "unknown",
+            json!({"reason":"cancelled while application was running"}),
+        ),
+    ] {
+        let mut data = base.clone();
+        data["state"] = json!(state);
+        data.as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        assert!(matches!(
+            read(&payload("tool_invocation", data)).unwrap(),
+            Some(Receipt::ToolInvocation(_))
+        ));
+    }
+    let mut invalid = base.clone();
+    invalid["state"] = json!("returned");
+    assert!(read(&payload("tool_invocation", invalid)).is_err());
+    let mut future = base;
+    future["version"] = json!(2);
+    assert!(matches!(
+        read(&payload("tool_invocation", future)).unwrap(),
+        Some(Receipt::Unsupported { .. })
+    ));
+}

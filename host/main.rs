@@ -2,6 +2,7 @@
 mod output;
 mod receipts;
 mod storage;
+mod tool_hub;
 use agent_bridge::acp::{
     AcpConnection, AcpEvent, AcpLaunch, ContentBlock, RecordActors, SessionUpdate,
 };
@@ -57,6 +58,15 @@ struct Open {
     env: HashMap<String, String>,
     #[serde(default)]
     delete_session_on_close: bool,
+    #[serde(default)]
+    allow_tools: Vec<agent_bridge::ToolRef>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureTools {
+    callback_protocol: u32,
+    tools: Vec<tool_hub::Definition>,
+    timeout_ms: u64,
 }
 #[derive(Clone)]
 struct Output {
@@ -184,6 +194,7 @@ async fn session_worker(
     mut commands: tokio::sync::mpsc::Receiver<Request>,
     output: Output,
     storage_budget: storage::Budget,
+    tools: Arc<tool_hub::Hub>,
 ) {
     let setup = async {
         if !std::path::Path::new(&open.database).is_absolute()
@@ -194,8 +205,10 @@ async fn session_worker(
                 "database/workspace must be absolute paths and executable must be nonempty".into(),
             );
         }
-        let store = storage::Store::open(open.database.clone().into(), &storage_budget)
-            .map_err(|e| e.to_string())?;
+        let store = Arc::new(
+            storage::Store::open(open.database.clone().into(), &storage_budget)
+                .map_err(|e| e.to_string())?,
+        );
         let mut launch = AcpLaunch::new(open.executable);
         for argument in open.args {
             launch = launch.arg(argument);
@@ -215,19 +228,22 @@ async fn session_worker(
     let result = async {
         store.create_session(SessionId::new(&session_id).unwrap()).map_err(|e| e.to_string())?;
         let slot_id = identity("slot");
+        let binding = tools.bind(agent_bridge::ToolScope {session:SessionId::new(&session_id).unwrap(),slot:SlotId::new(&slot_id).unwrap()},open.allow_tools,store.clone()).await?;
+        let mcp = binding.as_ref().map(|binding| vec![binding.mcp.clone()]).unwrap_or_default();
         let mut session = tokio::select! {
             _ = output.stop.cancelled() => return Ok::<_, String>(()),
-            result = connection.new_session(SessionId::new(&session_id).unwrap(), SlotId::new(&slot_id).unwrap(), open.workspace, vec![]) => result.map_err(|e|e.to_string())?,
+            result = connection.new_session(SessionId::new(&session_id).unwrap(), SlotId::new(&slot_id).unwrap(), open.workspace, mcp) => result.map_err(|e|e.to_string())?,
         };
-        output.ok(&create_id,json!({"session_id":session_id,"slot_id":slot_id,"configuration":session.configuration().values}));
+        output.ok(&create_id,json!({"session_id":session_id,"slot_id":slot_id,"configuration":session.configuration().values,"tool_binding_id":binding.as_ref().map(|b|&b.id)}));
         loop {
             let request = tokio::select! { _ = output.stop.cancelled()=>break, request=commands.recv()=>match request { Some(request)=>request,None=>break } };
             if request.method != "run" { output.error(&request.id,"not_running","session has no active run"); continue; }
             let prompt = match string(&request.params,"prompt") { Ok(prompt)=>prompt,Err(error)=>{output.error(&request.id,"invalid_params",error);continue;} };
             let run_id = identity("run");
-            let mut run = match session.start_recorded_run(RunId::new(&run_id).unwrap(),prompt,&store,RecordActors {
+            if let Some(binding) = &binding && let Err(error) = binding.begin() { output.error(&request.id,"tool_binding_retired",error); continue; }
+            let mut run = match session.start_recorded_run(RunId::new(&run_id).unwrap(),prompt,store.as_ref(),RecordActors {
                 user:ActorId::new("user").unwrap(),agent:ActorId::new("assistant").unwrap(),host:ActorId::new("host").unwrap(),
-            }) { Ok(run)=>run,Err(error)=>{output.error(&request.id,"start_failed",error);continue;} };
+            }) { Ok(run)=>run,Err(error)=>{if let Some(binding) = &binding { binding.end(); } output.error(&request.id,"start_failed",error);continue;} };
             output.ok(&request.id,json!({"run_id":run_id,"session_id":session_id}));
             let mut permissions: HashMap<String, (agent_bridge::acp::PermissionId, Value)> = HashMap::new();
             let mut reason = None; let mut failure = None;
@@ -244,7 +260,7 @@ async fn session_worker(
                                 permissions.retain(|_, (id, _)| run.permission_pending(id));
                                 output.ok(&command.id, json!(permissions.values().map(|(_, event)| event).collect::<Vec<_>>()));
                             }
-                            "cancel" => match run.cancel() { Ok(())=>output.ok(&command.id,json!({"cancellation_requested":true})),Err(error)=>output.error(&command.id,"cancel_failed",error) },
+                            "cancel" => { if let Some(binding) = &binding { binding.end(); } match run.cancel() { Ok(())=>output.ok(&command.id,json!({"cancellation_requested":true})),Err(error)=>output.error(&command.id,"cancel_failed",error) } },
                             "respond" => {
                                 let result = (|| {
                                     let token=string(&command.params,"permission_id")?;
@@ -278,6 +294,7 @@ async fn session_worker(
             }
             let status=if failure.is_some() { "unknown" } else { state(run.run().status()) };
             drop(run);
+            if let Some(binding) = &binding { binding.end(); }
             if output.stop.is_cancelled() { break; }
             output.emit(json!({"event":"run_finished","stream":request.id,"session_id":session_id,"run_id":run_id,"status":status,"reason":reason,"recording_error":failure}));
         }
@@ -300,6 +317,13 @@ async fn session_worker(
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--mcp-tools") {
+        if let Err(error) = tool_hub::helper() {
+            eprintln!("MCP helper failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let storage_budget = storage::Budget::new(12);
     let stop = CancellationToken::new();
     let failed = Arc::new(AtomicBool::new(false));
@@ -309,6 +333,8 @@ fn main() {
         stop: stop.clone(),
         failed: failed.clone(),
     };
+    let mut tools = Arc::new(tool_hub::Hub::new(vec![], 30000, output.clone()).unwrap());
+    let mut tools_locked = false;
     let writer_stop = stop.clone();
     let writer_failed = failed.clone();
     let writer = std::thread::spawn(move || {
@@ -380,6 +406,43 @@ fn main() {
             continue;
         }
         match request.method.as_str() {
+            "configure_tools" => {
+                if tools_locked {
+                    output.error(
+                        &request.id,
+                        "tools_locked",
+                        "tool declarations are immutable after configuration or session creation",
+                    );
+                    continue;
+                }
+                let config: ConfigureTools = match serde_json::from_value(request.params) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        output.error(&request.id, "invalid_tools", error);
+                        continue;
+                    }
+                };
+                if config.callback_protocol != 1 {
+                    output.error(
+                        &request.id,
+                        "unsupported_tool_protocol",
+                        "tool callback protocol 1 required",
+                    );
+                    continue;
+                }
+                match tool_hub::Hub::new(config.tools, config.timeout_ms, output.clone()) {
+                    Ok(hub) => {
+                        tools = Arc::new(hub);
+                        tools_locked = true;
+                        output.ok(&request.id, json!({"callback_protocol":1}));
+                    }
+                    Err(error) => output.error(&request.id, "invalid_tools", error),
+                }
+            }
+            "tool_result" => match tools.reply(&request.params) {
+                Ok(()) => output.ok(&request.id, json!({"response_queued":true})),
+                Err(error) => output.error(&request.id, "invalid_tool_result", error),
+            },
             "ping" => output.ok(&request.id, json!({"alive":true})),
             "shutdown" => {
                 output.ok(&request.id, json!({"shutdown_requested":true}));
@@ -398,9 +461,15 @@ fn main() {
                     }
                 };
                 let id = identity("session");
+                if let Err(error) = tools.validate(&open.allow_tools) {
+                    output.error(&request.id, "invalid_tool_grant", error);
+                    continue;
+                }
+                tools_locked = true;
                 let worker_id = id.clone();
                 let worker_output = output.clone();
                 let budget = storage_budget.clone();
+                let tools = tools.clone();
                 let (tx, rx) = tokio::sync::mpsc::channel(16);
                 sessions.insert(id, tx);
                 workers.push(std::thread::spawn(move || {
@@ -416,6 +485,7 @@ fn main() {
                         rx,
                         worker_output,
                         budget,
+                        tools,
                     ));
                 }));
             }
@@ -491,6 +561,7 @@ fn main() {
         }
     }
     drop(output);
+    drop(tools);
     let _ = writer.join();
     if failed.load(Ordering::SeqCst) {
         std::process::exit(1);
