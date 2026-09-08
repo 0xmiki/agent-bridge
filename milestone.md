@@ -31,14 +31,15 @@ objects in application code. Acceptance: [quality gates 1–3](docs/quality-gate
 - [x] Reject foreign/stale/invalid/duplicate permission responses without consuming valid requests.
 - [x] Explicit SQLite lock failure, independent-database session progress, and no automatic retry.
 - [x] SQLite snapshot/change cursors, old-record updates, and initial typed client projections.
-- [ ] Extend typed readers to bridge-owned receipts and settle the public projection API.
+- [x] Typed readers for the five bridge-owned receipt families, version handling, precision, and checkpoint upgrades.
 - [x] Shared-database contention policy: separate read-only queries, DELETE/WAL concurrency tests, bounded explicit lock failures.
 - [x] Bounded storage workers: controlled stall, cancellation/cleanup, late-write uncertainty, capacity, and panic tests.
 - [x] Independent Bun run observers: bounded queues, scoped lag, unsubscribe, and live permission recovery.
 - [ ] Document equivalent Rust usage and the settled error/ownership contract.
 
-Next slice: typed readers for bridge-owned receipts, then the Rust integration and
-error/ownership documentation needed to finish H1. Observer isolation is scoped to
+Next slice: the Rust integration and error/ownership documentation needed to finish
+H1 and consolidate the provisional public API. Receipt readers are implemented for
+existing formats without requiring a database migration. Observer isolation is scoped to
 the Bun client; a failed shared transport still fails the host. The host has an outer storage wait
 budget, separate from SQLite lock waits, with explicit uncertainty and bounded worker
 capacity. [Controlled fault tests](docs/runtime-isolation.md) cover stalled operations;

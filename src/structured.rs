@@ -1,8 +1,8 @@
 //! Host validation of a JSON result, independent of provider enforcement.
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{error::Error, fmt, marker::PhantomData};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum JsonRejection {
     MissingOutput,

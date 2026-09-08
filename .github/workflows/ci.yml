@@ -15,6 +15,7 @@ jobs:
           bun-version: 1.3.13
       - run: cargo fmt --check
       - run: cargo check --locked --no-default-features
+      - run: cargo check --locked --no-default-features --features receipts
       - run: cargo test --locked --all-features --all-targets
       - run: cargo clippy --locked --all-features --all-targets -- -D warnings
       - run: cargo build --locked --features host --bin agent-bridge-host

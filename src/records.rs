@@ -7,6 +7,8 @@ mod memory;
 pub use memory::MemoryStore;
 mod continuation;
 mod question;
+#[cfg(feature = "receipts")]
+pub mod receipts;
 mod rules;
 pub use continuation::{Continuation, ContinuationRecord, ContinuationState, ContinuationStore};
 pub use question::{

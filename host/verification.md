@@ -161,3 +161,24 @@ A reattachment test retrieves a live permission missed by a lagged observer, ans
 its original token, and completes the same run. It verifies one prompt dispatch and
 zero automatic cancellation requests. Shared transport failures remain whole-host
 failures; this increment establishes independent observers inside the Bun client.
+
+## Typed receipt readers, September 8
+
+189 Rust tests and twenty-three Bun host tests with 673 assertions passed locally,
+along with Clippy, rustfmt, default-feature-free compilation, TypeScript checking,
+and a standalone `receipts` feature build without ACP or SQLite.
+
+The readers cover all five existing bridge-owned extension families. Tests exercise
+input versions 1–4, restoration versions 1–3, structured-result evidence, the legacy
+configuration report, future versions, unknown extensions, and malformed evidence.
+Existing ACP fixture workflows now pass their generated receipts through the reader,
+including image/policy/skill inputs and accepted/rejected JSON results.
+
+Shared Rust/host vectors verify the transport projection. The host preserves revision
+`9007199254740993` exactly as a decimal string, exposes request text without sending
+it twice, keeps malformed receipts visible as invalid, and retains unknown payloads.
+Legacy client checkpoints rescan to acquire receipt metadata; current checkpoints
+and typed views survive reopening the host.
+
+These are interpretation checks, not provider attestation or revalidation of stored
+application results. No live Codex threads were created for this increment.

@@ -1,4 +1,5 @@
 import type { BridgeHost, ChangeCursor, StoredRecord } from "./client";
+import { readReceipt, type Receipt } from "./receipts";
 
 export type TranscriptItem = { record: StoredRecord } & (
   | { kind: "message"; role: "user" | "agent" | "reasoning"; text: string }
@@ -6,6 +7,7 @@ export type TranscriptItem = { record: StoredRecord } & (
   | { kind: "permission"; title: string; options: { id: string; label: string; effect: string }[] }
   | { kind: "failure"; message: string }
   | { kind: "run_finished"; reason: string }
+  | { kind: "receipt"; receipt: Receipt }
   | { kind: "other" }
 );
 
@@ -15,6 +17,10 @@ export function project(record: StoredRecord): TranscriptItem {
   const data = record.payload.data as any;
   const invalid = () => { throw new Error(`invalid ${record.payload.type} record ${record.id}`); };
   switch (record.payload.type) {
+    case "extension": {
+      const receipt = readReceipt(record);
+      return receipt ? {kind:"receipt",receipt,record} : {kind:"other",record};
+    }
     case "message": {
       if (!data || !["user", "agent", "reasoning"].includes(data.kind) || !Array.isArray(data.message?.content)) return invalid();
       const text = data.message.content.filter((part: any) => part.type === "text").map((part: any) => {
@@ -39,7 +45,7 @@ export function project(record: StoredRecord): TranscriptItem {
 }
 
 /** Latest-record projection. Polling is explicit; no unbounded background subscriber. */
-export interface StateCheckpoint { cursor: ChangeCursor; records: StoredRecord[] }
+export interface StateCheckpoint { projection_version?: number; cursor: ChangeCursor; records: StoredRecord[] }
 export class SessionState {
   private records = new Map<string, StoredRecord>();
   private position?: ChangeCursor;
@@ -51,13 +57,17 @@ export class SessionState {
   constructor(readonly database: string, readonly sessionId: string, checkpoint?: StateCheckpoint) {
     if (checkpoint) {
       if (checkpoint.cursor.session_id !== sessionId || checkpoint.records.some(row => row.session_id !== sessionId)) throw new Error("foreign state checkpoint");
+      // Legacy checkpoints have no receipt metadata. Rescan instead of keeping
+      // same-revision records forever without the new projection fields.
+      if (checkpoint.projection_version === undefined) return;
+      if (checkpoint.projection_version !== 1) throw new Error("unsupported state projection version");
       const copy = structuredClone(checkpoint);
       copy.records.forEach(project);
       this.records = new Map(copy.records.map(row => [row.id, row])); this.position = copy.cursor;
     }
   }
   checkpoint(): StateCheckpoint | undefined {
-    return this.position && structuredClone({ cursor: this.position, records: [...this.records.values()] });
+    return this.position && structuredClone({ projection_version:1, cursor: this.position, records: [...this.records.values()] });
   }
   async sync(host: BridgeHost, limit = 100) {
     if (this.syncing) throw new Error("state sync already in progress");

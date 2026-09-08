@@ -33,8 +33,9 @@ Creation-sequence pagination remains separate from the new SQLite change cursor.
 Schema 7 and host `snapshot`/`changes` now support coalesced old-record updates,
 overlapping snapshot pages, and persisted client checkpoints. Tests reject foreign
 cursors and prove a failed refresh does not advance local state. Initial typed
-readers cover common transcript items; receipt readers and independent subscription
-scheduling remain open. See [state synchronization](state-sync.md).
+readers cover common transcript items. [Receipt readers](receipt-readers.md) now cover
+all five bridge-owned extension families, with explicit malformed/future handling,
+exact host counters, and checkpoint upgrades. See [state synchronization](state-sync.md).
 
 ## 3. Runtime isolation
 

@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
-    any(feature = "acp", feature = "sqlite"),
+    any(feature = "acp", feature = "sqlite", feature = "receipts"),
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
-    any(feature = "acp", feature = "sqlite"),
+    any(feature = "acp", feature = "sqlite", feature = "receipts"),
     serde(
         tag = "type",
         content = "value",
@@ -26,10 +26,13 @@ pub type ConfigValues = BTreeMap<String, ConfigValue>;
 /// of which remote model actually served every generation or delegated task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(
-    any(feature = "acp", feature = "sqlite"),
+    any(feature = "acp", feature = "sqlite", feature = "receipts"),
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(any(feature = "acp", feature = "sqlite"), serde(deny_unknown_fields))]
+#[cfg_attr(
+    any(feature = "acp", feature = "sqlite", feature = "receipts"),
+    serde(deny_unknown_fields)
+)]
 pub struct RunConfiguration {
     /// Explicit selections successfully acknowledged on this session handle.
     pub requested: ConfigValues,

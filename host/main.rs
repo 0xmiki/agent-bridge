@@ -1,5 +1,6 @@
 //! Experimental owned ACP host. Stdout is exclusively protocol v1 JSON-lines.
 mod output;
+mod receipts;
 mod storage;
 use agent_bridge::acp::{
     AcpConnection, AcpEvent, AcpLaunch, ContentBlock, RecordActors, SessionUpdate,
@@ -99,7 +100,7 @@ fn state(status: RunStatus) -> &'static str {
 fn snapshot(value: &Snapshot) -> Value {
     let record = &value.record;
     json!({"id":record.id.as_str(),"session_id":record.session_id.as_str(),"run_id":record.run_id.as_ref().map(|id|id.as_str()),
-        "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload})
+        "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload,"receipt":receipts::view(&record.payload)})
 }
 fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
     let store =

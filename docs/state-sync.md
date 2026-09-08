@@ -61,10 +61,12 @@ If a live [run observer](subscriptions.md) lags, synchronize this saved state an
 attach a new observer. Use `run.pendingPermissions()` for current interaction tokens;
 portable history does not itself recreate live permission handles.
 
-The initial typed readers expose message roles/text, tool titles/statuses, permission
-options, failures, and completion reasons. Raw records retain resources, decisions,
-questions, extensions, and receipt details. More typed receipt readers and independent
-subscriber scheduling remain open; this increment does not settle the whole public API.
+Typed readers expose message roles/text, tool titles/statuses, permission options,
+failures, completion reasons, and [bridge-owned receipts](receipt-readers.md). Raw
+records retain resources, decisions, questions, and other extensions. Saved checkpoints
+carry `projection_version: 1`; older unversioned checkpoints trigger a fresh scan so
+same-revision records acquire the new receipt metadata. Future checkpoint versions
+fail explicitly. The public API remains provisional.
 
 Tests cover updates to old records, overlapping pages, coalescing, exact reopened
 state, cursor misuse, schema-6 backfill, rollback, and failure without cursor advancement.

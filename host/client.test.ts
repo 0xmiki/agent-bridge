@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BridgeHost, type HostRun, type RunEvent, type StoredRecord } from "./client";
 import { SessionState } from "./state";
+import { readReceipt } from "./receipts";
 
 const root = resolve(import.meta.dir, "..");
 const binary = process.env.AGENT_BRIDGE_HOST ?? join(root, "target/debug/agent-bridge-host");
@@ -540,4 +541,59 @@ test("reattached observers recover a pending permission after lag without replay
     expect(wire.filter(frame => frame.method === "session/prompt")).toHaveLength(1);
     expect(wire.filter(frame => frame.method === "session/cancel")).toHaveLength(0);
   } finally { await host.close(); }
+}, 15000);
+
+test("typed receipt views survive host transport, preserve precision, and refresh legacy checkpoints", async () => {
+  const host = new BridgeHost(binary);
+  const config = options("receipt-views");
+  let checkpoint: ReturnType<SessionState["checkpoint"]>; let sessionId = "";
+  try {
+    const session = await host.createSession(config); sessionId = session.id;
+    const vectors = readFileSync(join(root, "verification/receipts.json"), "utf8");
+    const expected = JSON.parse(vectors) as {expected:string}[];
+    const sql = new Database(config.database);
+    // JSON stays inside SQLite here: JS must not round the large revision before
+    // Rust reads the fixture and emits its decimal-string projection.
+    sql.exec("BEGIN IMMEDIATE");
+    try {
+      sql.query(`INSERT INTO agent_bridge_records (id,session_id,sequence,actor_id,payload_json,state,revision)
+        SELECT 'receipt-' || key, ?, key, 'host', json_object('version',2,'data',json_object(
+          'type','extension','data',json_object('namespace',coalesce(json_extract(value,'$.namespace'),'agent_bridge'),
+          'name',json_extract(value,'$.name'),'data',json(json_extract(value,'$.data'))))), 'complete',0
+        FROM json_each(?)`).run(session.id, vectors);
+      sql.query("UPDATE agent_bridge_sessions SET next_sequence = ? WHERE id = ?").run(expected.length, session.id);
+      sql.exec("COMMIT");
+    } catch(error) { sql.exec("ROLLBACK"); throw error; }
+    finally { sql.close(); }
+    const state = new SessionState(config.database, session.id);
+    await state.sync(host, 3);
+    const records = state.items.map(item => item.record);
+    const kinds: string[] = records.map(record => readReceipt(record)?.kind ?? "none");
+    expect(kinds).toEqual(expected.map(vector => vector.expected));
+    const input = readReceipt(records[0]!);
+    expect(input?.kind === "input" && input.data.state === "prepared" && input.data.wire_text).toBe("wire-marker");
+    expect(input?.kind === "input" && input.data.state === "prepared" && input.data.wire_bytes).toBe("11");
+    expect("wire_text" in (records[0]!.receipt!.data)).toBe(false);
+    const contract = readReceipt(records[5]!);
+    expect(contract?.kind === "result_contract" && contract.data.wire_text).toBe("contract-wire-marker");
+    const validation = readReceipt(records[6]!);
+    expect(validation?.kind === "result_validation" && validation.data.sources[0]!.revision).toBe("9007199254740993");
+    expect(validation?.kind === "result_validation" && validation.data.native_enforcement).toBe(false);
+    expect(state.items[11]!.kind).toBe("receipt");
+    expect(readReceipt(records[11]!)?.kind).toBe("invalid");
+    expect((records[10]!.payload.data as {data:{extra:{keep:boolean}}}).data.extra.keep).toBe(true);
+    checkpoint = state.checkpoint();
+    const legacy = {...checkpoint!, projection_version:undefined, records:records.map(({receipt, ...record}) => record)};
+    const migrated = new SessionState(config.database, session.id, legacy);
+    expect(migrated.cursor).toBeUndefined();
+    await migrated.sync(host, 3);
+    expect(migrated.checkpoint()).toEqual(checkpoint);
+    expect(() => new SessionState(config.database, session.id, {...checkpoint!, projection_version:99})).toThrow("unsupported state projection version");
+  } finally { await host.close(); }
+  const reopened = new BridgeHost(binary);
+  try {
+    const state = new SessionState(config.database, sessionId, checkpoint!);
+    await state.sync(reopened, 3);
+    expect(state.checkpoint()).toEqual(checkpoint);
+  } finally { await reopened.close(); }
 }, 15000);

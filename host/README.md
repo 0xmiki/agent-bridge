@@ -66,6 +66,9 @@ The host owns identifiers and permission routing. The client imports no ACP SDK.
 are decimal strings to preserve precision. Payload data remains an untyped portable
 envelope. [State synchronization](../docs/state-sync.md) adds typed readers in
 `state.ts` and a checkpoint containing both records and their change cursor.
+[Receipt readers](../docs/receipt-readers.md) in `receipts.ts` expose input, restoration,
+validation, and configuration evidence. The host adds validated metadata, represents
+malformed/future receipts explicitly, and keeps large counters as decimal strings.
 
 For disposable provider sessions, set `delete_session_on_close: true`. Shutdown
 requests ACP session deletion and exits nonzero if cleanup fails. The pinned Codex

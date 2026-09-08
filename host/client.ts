@@ -1,8 +1,9 @@
 /** Experimental v1 client. No ACP SDK objects cross this boundary. */
 import { spawn } from "bun";
+import type { ReceiptView } from "./receipts";
 
 export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean }
-export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown } }
+export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown }; receipt?: ReceiptView | null }
 export interface HistoryPage { records: StoredRecord[]; next_after: string | null; page_full: boolean }
 export interface ChangeCursor { epoch: string; session_id: string; position: string }
 export interface StatePage extends HistoryPage { cursor: ChangeCursor }

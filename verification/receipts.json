@@ -1,0 +1,18 @@
+[
+  {"name":"input_receipt","expected":"input","data":{"version":1,"state":"prepared","encoding":"agent_bridge.text_context.v1","context_mode":"append_to_native","wire_text":"wire-marker","wire_bytes":11,"omissions":[]}},
+  {"name":"input_receipt","expected":"input","data":{"version":2,"state":"response_received","stop_reason":"end_turn"}},
+  {"name":"input_receipt","expected":"input","data":{"version":3,"state":"unknown"}},
+  {"name":"input_receipt","expected":"input","data":{"version":4,"state":"dispatch_attempted"}},
+  {"name":"restoration","expected":"restoration","data":{"version":1,"strategy":"native_resume","continuation":"continuation-1","native_context":"reused_uninspected","portable_context_replayed":false}},
+  {"name":"result_contract","expected":"result_contract","data":{"version":1,"name":"answer","revision":"v1","mode":"validate_returned_text","native_enforcement":false,"max_validation_bytes":4096,"validator":"serde_deserialize","application_validation":true,"wire_text":"contract-wire-marker"}},
+  {"name":"result_validation","expected":"result_validation","data":{"version":1,"contract":{"name":"answer","revision":"v1"},"mode":"validate_returned_text","native_enforcement":false,"sources":[{"id":"answer-record","revision":9007199254740993}],"validation":{"status":"valid"}}},
+  {"name":"result_validation","expected":"result_validation","data":{"version":1,"contract":{"name":"answer","revision":"v1"},"mode":"validate_returned_text","native_enforcement":false,"sources":[],"validation":{"status":"rejected","rejection":{"kind":"invalid_value","detail":"count mismatch"}}}},
+  {"name":"configuration_report","expected":"configuration_report","data":{"confirmed":{"model":{"type":"select","value":"reported-model"},"fast":{"type":"boolean","value":false}}}},
+  {"name":"configuration_report","expected":"configuration_report","data":{"confirmed":null}},
+  {"name":"input_receipt","expected":"unsupported","data":{"version":99,"state":"new-future-state","extra":{"keep":true}}},
+  {"name":"result_validation","expected":"invalid","data":{"version":1,"contract":{"name":"answer","revision":"v1"},"mode":"validate_returned_text","native_enforcement":false,"sources":[],"validation":{"status":"valid","rejection":{"kind":"missing_output"}}}},
+  {"name":"input_receipt","expected":"invalid","data":{"version":1,"state":"prepared","encoding":"agent_bridge.text_context.v1","context_mode":"append_to_native","wire_text":"wire-marker","wire_bytes":10,"omissions":[]}},
+  {"name":"input_receipt","expected":"invalid","data":{"state":"response_received","stop_reason":"end_turn"}},
+  {"name":"future_receipt","expected":"none","data":{"version":1,"keep":"unknown bridge extension"}},
+  {"namespace":"acp","name":"input_receipt","expected":"none","data":{"version":1,"keep":"provider extension"}}
+]

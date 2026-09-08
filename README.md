@@ -8,6 +8,8 @@ The API is still being developed. The host is our integration test application;
 future features must prove their application-facing behavior there.
 The host now offers [change cursors and typed state readers](docs/state-sync.md),
 including persisted projection checkpoints for reconnecting clients.
+[Typed receipt readers](docs/receipt-readers.md) expose bridge-owned evidence without
+application-specific extension JSON parsing.
 
 Read the [milestones](milestone.md) for current status and the next implementation
 target. The [philosophy](philosophy.md), [working model](docs/model.md), and roadmap

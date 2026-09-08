@@ -1281,6 +1281,9 @@ async fn structured_results_distinguish_validation_from_provider_completion() {
         let records = store
             .list(&SessionId::new("app-session").unwrap(), None, 100)
             .unwrap();
+        for record in &records {
+            assert_receipt_readable(&record.record.payload);
+        }
         assert!(records.iter().any(|record| matches!(&record.record.payload, Payload::Extension { name, data, .. } if name == "result_validation" && data["native_enforcement"] == false)));
     }
 }
@@ -1382,6 +1385,9 @@ async fn structured_contract_and_validation_provenance_survive_reopen() {
     assert!(
         matches!(&source.record.payload, Payload::Message { kind:MessageKind::Agent, message } if message.content == vec![Content::Text("{\"count\":3}".into())])
     );
+    for record in &records {
+        assert_receipt_readable(&record.record.payload);
+    }
     assert!(records.iter().any(|record| matches!(&record.record.payload, Payload::Extension { name, data, .. } if name == "result_contract" && data["application_validation"] == true && data["native_enforcement"] == false)));
 }
 
@@ -2476,10 +2482,26 @@ async fn interrupted_context_delivery_stays_unknown() {
 }
 
 async fn recorded_next<S: RecordStore>(run: &mut RecordedRun<'_, '_, '_, S>) -> Option<AcpEvent> {
-    timeout(Duration::from_secs(3), run.next())
+    let event = timeout(Duration::from_secs(3), run.next())
         .await
         .unwrap()
-        .unwrap()
+        .unwrap();
+    if matches!(event, Some(AcpEvent::Finished(_)) | None) {
+        for record in run.snapshot() {
+            assert_receipt_readable(&record.record.payload);
+        }
+    }
+    event
+}
+
+fn assert_receipt_readable(payload: &Payload) {
+    #[cfg(feature = "receipts")]
+    assert!(!matches!(
+        agent_bridge::records::receipts::read(payload).unwrap(),
+        Some(agent_bridge::records::receipts::Receipt::Unsupported { .. })
+    ));
+    #[cfg(not(feature = "receipts"))]
+    let _ = payload;
 }
 
 #[cfg(feature = "sqlite")]
