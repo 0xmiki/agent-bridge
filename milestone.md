@@ -15,10 +15,12 @@ and recovery evidence weaker than the core model, so delivery now follows applic
 features. The [host](host/README.md) is our acceptance application. Existing Rust
 features are not automatically completed host features.
 
-## H1 — Host integration proof (in progress)
+## H1 — Host integration proof (complete within documented scope)
 
-Outcome: launch agents, run and cancel work, and build correct local state without ACP
-objects in application code. Acceptance: [quality gates 1–3](docs/quality-gates.md).
+Outcome: launch agents, run and cancel work, and build correct local state without
+implementing ACP parsing, routing, or process supervision. The direct Rust path
+exposes typed adapter events; the Bun client uses host DTOs. Acceptance:
+[quality gates 1–3](docs/quality-gates.md) within the [recorded H1 scope](docs/h1-acceptance.md).
 
 - [x] Rust host and versioned stdio protocol with Bun client.
 - [x] Fixtures: concurrent sessions, repeat turns, permissions, cancellation,
@@ -35,20 +37,14 @@ objects in application code. Acceptance: [quality gates 1–3](docs/quality-gate
 - [x] Shared-database contention policy: separate read-only queries, DELETE/WAL concurrency tests, bounded explicit lock failures.
 - [x] Bounded storage workers: controlled stall, cancellation/cleanup, late-write uncertainty, capacity, and panic tests.
 - [x] Independent Bun run observers: bounded queues, scoped lag, unsubscribe, and live permission recovery.
-- [ ] Document equivalent Rust usage and the settled error/ownership contract.
+- [x] Document hosted/direct Rust usage and error/ownership boundaries; compile and fixture-test the complete Rust example.
 
-Next slice: the Rust integration and error/ownership documentation needed to finish
-H1 and consolidate the provisional public API. Receipt readers are implemented for
-existing formats without requiring a database migration. Observer isolation is scoped to
-the Bun client; a failed shared transport still fails the host. The host has an outer storage wait
-budget, separate from SQLite lock waits, with explicit uncertainty and bounded worker
-capacity. [Controlled fault tests](docs/runtime-isolation.md) cover stalled operations;
-actual kernel I/O failure and OS termination evidence remain release work. This is a
-bounded failure contract, not a promise that an in-progress write can be cancelled.
-The first [state synchronization contract](docs/state-sync.md) is implemented with
-coalesced record changes rather than a transcript-revision log. Fault tests exposed and
-fixed unbounded stdout writes, long lock waits, and colliding permission tokens. The
-new bounded failure policies do not replace the remaining storage/recovery work.
+H1 acceptance, checks, and retained limitations are recorded in
+[h1-acceptance.md](docs/h1-acceptance.md). This completes the integration proof; it
+does not release an alpha or claim equivalent runtime guarantees for every embedding
+path. Next slice: H2's first application tool through the host and client, with an
+actual MCP binding derived from the approved grant and fixture invocation/cancellation
+checks. Expand questions, context, and result handling after that path is established.
 
 Test hygiene: disposable Codex checks must request provider session cleanup after
 verification. `host/example.ts` enables this automatically for codex-acp launches;
@@ -95,7 +91,9 @@ The current crate version is scaffold metadata, not a released alpha.
 
 OpenCode and Codex have prior real Rust evidence; host results are tracked separately.
 Claude authenticated checks remain deferred at the user's request. Linux is the only
-locally tested host platform. Subscriptions, storage stalls, and recovery remain open.
+locally tested host platform. Bun observer isolation and controlled storage-stall
+handling are implemented. Shared-transport fairness, actual OS fault evidence,
+hosted interactions, and crash recovery remain outside H1's completed scope.
 
 Defer full Tauri packaging, all three app migrations, remote stores, non-ACP drivers,
 native internal subagent control, general routing/scheduling, and broad native skill/output

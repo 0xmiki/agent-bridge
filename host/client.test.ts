@@ -597,3 +597,32 @@ test("typed receipt views survive host transport, preserve precision, and refres
     expect(state.checkpoint()).toEqual(checkpoint);
   } finally { await reopened.close(); }
 }, 15000);
+
+for (const mode of ["chat", "prompt-error"] as const) {
+  test(`documented Rust integration owns cleanup on ${mode}`, async () => {
+    const executable = join(root, "target/debug/examples/rust_integration");
+    if (!existsSync(executable)) throw new Error("Build with cargo build --features host --example rust_integration first");
+    const database = join(directory, `rust-example-${mode}.sqlite3`);
+    const pid = join(directory, `rust-example-${mode}.pid`);
+    const deleted = join(directory, `rust-example-${mode}.deleted`);
+    const child = Bun.spawn([executable, database, directory, fixture, mode], {
+      stdin:"ignore", stdout:"pipe", stderr:"pipe",
+      env:{...process.env, AGENT_BRIDGE_CODEX_TEST:"1", BRIDGE_TEST_PID:pid, BRIDGE_TEST_DELETED:deleted},
+    });
+    const output = new Response(child.stdout).text(); const errors = new Response(child.stderr).text();
+    try {
+      expect(await within(child.exited, 10000)).toBe(mode === "chat" ? 0 : 1);
+      const stdout = await output; const stderr = await errors;
+      expect(readFileSync(deleted, "utf8")).toBe('"native-1"');
+      expect(() => process.kill(Number(readFileSync(pid, "utf8")), 0)).toThrow();
+      if (mode === "chat") { expect(stdout).toContain("Hello world"); expect(stdout).toContain("Verified"); }
+      else expect(stderr).toContain("fixture prompt error");
+      const sql = new Database(database, {readonly:true});
+      try { expect((sql.query("SELECT count(*) AS count FROM agent_bridge_records").get() as {count:number}).count).toBeGreaterThan(0); }
+      finally { sql.close(); }
+    } finally {
+      if (child.exitCode === null) child.kill();
+      await child.exited;
+    }
+  }, 15000);
+}

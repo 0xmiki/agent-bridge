@@ -18,7 +18,7 @@ jobs:
       - run: cargo check --locked --no-default-features --features receipts
       - run: cargo test --locked --all-features --all-targets
       - run: cargo clippy --locked --all-features --all-targets -- -D warnings
-      - run: cargo build --locked --features host --bin agent-bridge-host
+      - run: cargo build --locked --features host --bin agent-bridge-host --example rust_integration
       - run: bun install --frozen-lockfile
         working-directory: host
       - run: bun run typecheck

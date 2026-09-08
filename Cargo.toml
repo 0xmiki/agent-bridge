@@ -47,6 +47,10 @@ name = "acp_chat"
 required-features = ["acp"]
 
 [[example]]
+name = "rust_integration"
+required-features = ["acp", "sqlite", "receipts"]
+
+[[example]]
 name = "sqlite_history"
 required-features = ["sqlite"]
 

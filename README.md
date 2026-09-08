@@ -14,6 +14,8 @@ application-specific extension JSON parsing.
 Read the [milestones](milestone.md) for current status and the next implementation
 target. The [philosophy](philosophy.md), [working model](docs/model.md), and roadmap
 will evolve as we test the implementation against real agents.
+Start with the [application integration guide](docs/integration.md) for the hosted
+and direct Rust paths, their limits, and the error/ownership contract.
 
 Implemented so far: typed identifiers, slots and sessions, explicit context
 references, typed record envelopes, and an in-memory run lifecycle. The optional

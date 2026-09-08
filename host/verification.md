@@ -182,3 +182,17 @@ and typed views survive reopening the host.
 
 These are interpretation checks, not provider attestation or revalidation of stored
 application results. No live Codex threads were created for this increment.
+
+## H1 integration contract, September 8
+
+The complete `rust_integration` example is now compiled and run in the host fixture
+suite. Its success case checks generation, change projection, typed receipt reading,
+and exact history after reopening. Both success and provider-error cases verify
+requested test-session cleanup and owned provider exit. CI builds the example before
+running those tests.
+
+189 Rust tests, twenty-five host tests with 684 assertions, Clippy, rustfmt,
+TypeScript checking, dependency-free core compilation, and standalone receipt-reader
+compilation passed locally. This increment used fixtures and created no live Codex
+threads. H1's acceptance scope and remaining boundaries are documented in
+[the acceptance audit](../docs/h1-acceptance.md).

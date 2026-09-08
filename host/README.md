@@ -3,12 +3,15 @@
 An experimental Rust subprocess and Bun TypeScript client for testing agent-bridge
 as an application dependency. It is private development tooling, not a released
 package or network service. Configure trusted local executables and paths.
+The [integration guide](../docs/integration.md) compares this path with direct Rust
+embedding. The [error/ownership contract](../docs/errors-and-ownership.md) defines
+what cancellation, shutdown, observer loss, and storage failures mean.
 
 Install Bun separately (tested with 1.3.13); the Nix shell supplies the Rust toolchain.
 
 ```sh
 nix-shell
-cargo build --features host --bin agent-bridge-host
+cargo build --features host --bin agent-bridge-host --example rust_integration
 cd host
 bun install --frozen-lockfile
 bun run typecheck

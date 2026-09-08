@@ -4,6 +4,8 @@ The adapter covers connection lifetime, new sessions, text prompts, streamed
 updates, permission decisions, and cancellation. It is not the final provider
 interface. ACP details stay in `agent_bridge::acp`; the core model remains
 independent of them.
+For the hosted/direct Rust comparison and complete compiled example, start with
+[application integration](integration.md) and [errors and ownership](errors-and-ownership.md).
 
 ## Usage
 
@@ -128,7 +130,7 @@ executables, protocol errors, and child failures return typed errors. The SDK ma
 include bounded stderr diagnostics in an error; applications should review those
 before logging. Agent-bridge does not log protocol traffic or environment values.
 
-## Evidence so far
+## Connection evidence and later coverage
 
 - Subprocess fixtures test initialization, unsupported versions, malformed
   responses, missing executables, early exit, post-initialization failure, literal
@@ -141,8 +143,9 @@ before logging. Agent-bridge does not log protocol traffic or environment values
   embedded context, session loading/resume, and HTTP/SSE MCP support. The example
   then shut down successfully.
 - A real text run in a temporary workspace streamed `agent-bridge connected.` and
-  returned `EndTurn` through OpenCode. No tool use was requested. This does not yet
-  validate real MCP execution, permission behavior, or other providers.
+  returned `EndTurn` through OpenCode. Those early checks covered connection and text
+  behavior. Later MCP, permission, and Codex checks are tracked in
+  [provider compatibility](providers.md) and [host verification](../host/verification.md).
 - A second OpenCode 1.18.25 check saved a continuation in SQLite, shut down the ACP
   process, resumed from a new process, and recalled a unique phrase from native
   context. See [provider continuations](continuations.md) for the limits.
@@ -151,19 +154,24 @@ The fixture is a standalone Rust program compiled by the integration test using
 `rustc`, so tests need no installed AI CLI, credentials, Python, or network access.
 Fixture artifacts stay under Cargo's target directory.
 
-## Next questions
+## Composition and remaining limits
 
-Native session history stays with the provider. The adapter sends only the new
-text and does not replay application history, resolve context manifests, or store
-continuation handles. The current empty core context manifest means no explicit
+Native session history stays with the provider. A plain `start_run` sends the new
+input. Explicit [context tasks](context.md) and [restoration policies](restoration.md)
+can prepare selected portable context; they do not run implicitly. An empty core
+context manifest means no explicit
 record/resource selection was supplied; it does not mean the native session has
 no history. The optional [recorded-run wrapper](records.md) now assembles portable
 records in a memory or [SQLite store](sqlite.md). Persisted transcripts remain separate
 from native context. The [continuation API](continuations.md) can hand off and resume
 an ACP session when the agent advertises `sessionCapabilities.resume`.
 
-Instruction injection, image input, native load/close, structured
-output, and other client requests remain outside this step. Configuration updates
+Supplemental instruction text, explicit images, native resume, and host-side
+structured-result validation now have dedicated Rust APIs. These do not establish
+native base-instruction replacement, skill activation, or provider-enforced output
+schemas. Provider-defined session deletion is explicit and separate from process
+shutdown. Filesystem/terminal client operations and general native load/close APIs
+remain outside the current adapter. Configuration updates
 outside active runs update the session catalog; other idle updates are not retained.
 Capability tests must establish additional behaviors before the
 adapter claims support. Timed-out setup requests are not retried or adopted later.

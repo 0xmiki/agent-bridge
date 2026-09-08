@@ -5,6 +5,8 @@ exposes a better requirement. The independent review rated the pre-host architec
 7/10 and roadmap 6/10. These gates are its proposed route toward a defensible 9/10,
 not a promise that a test count produces a score. A 10/10 assessment would need
 sustained consumer, release, upgrade, and provider-change evidence.
+The [H1 acceptance audit](h1-acceptance.md) records which parts of gates 1–3 are
+established for the Linux hosted proof and which release/recovery limits remain.
 
 ## 1. Application ownership
 
