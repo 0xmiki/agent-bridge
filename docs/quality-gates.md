@@ -136,5 +136,6 @@ H4 now verifies extracted Rust and installed Bun artifacts, a frozen schema-1
 upgrade, wire-version rejection, and the full Linux host fault suite. OpenCode and
 Codex also passed live checks through those artifacts on September 12, 2026.
 Independent developer review is deferred by the maintainer for the experimental
-Rust alpha, not completed. Final publication remains open;
+Rust alpha, not completed. Rust `agent-bridge-acp 0.1.0-alpha.0` is published;
+the Bun package remains private. CI passed on retry with unresolved intermittent failures;
 see the [release checklist](release.md). Gate 6 is not yet complete.

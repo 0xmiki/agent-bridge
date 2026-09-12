@@ -100,7 +100,7 @@ Outcome: an independent developer installs packages and succeeds. Acceptance: ga
 
 - [x] Package Rust and TypeScript entry points; compile consumer examples.
 - [x] Previous-database upgrade fixture and wire compatibility checks.
-- [ ] Publish provider/version/OS evidence and limitations (documented locally).
+- [x] Publish provider/version/OS evidence and limitations (Rust alpha release).
 - [x] Lifecycle and descendant cleanup on every advertised OS (Linux only).
 - [ ] Independent consumer integration/review (maintainer deferred this for the experimental Rust alpha).
 
@@ -111,7 +111,8 @@ and wire versions, and runs the hosted workflow plus all 56 host tests against t
 installed binary. Linux CI uses the same script; local results are not remote CI
 evidence. See the [release checklist](docs/release.md) for the remaining blockers.
 
-The Rust candidate is `agent-bridge-acp 0.1.0-alpha.0`, not a released alpha.
+The Rust alpha `agent-bridge-acp 0.1.0-alpha.0` is published on crates.io.
+The Bun package remains private; independent review is deferred, not completed.
 
 ## Scope and evidence
 
