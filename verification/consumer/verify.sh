@@ -7,9 +7,9 @@ echo "Consumer directory: $consumer"
 cd "$root"
 # Packaging may include this uncommitted verification change; never publishes.
 cargo package --locked --allow-dirty --no-verify
-tar -xzf "$root/target/package/agent-bridge-0.1.0.crate" -C "$consumer"
-cargo install --locked --offline --path "$consumer/agent-bridge-0.1.0" --features host --bin agent-bridge-host --root "$consumer/installed" --target-dir "$root/target"
-cargo check --locked --offline --manifest-path "$consumer/agent-bridge-0.1.0/Cargo.toml" --all-features --all-targets --target-dir "$root/target"
+tar -xzf "$root/target/package/agent-bridge-acp-0.1.0-alpha.0.crate" -C "$consumer"
+cargo install --locked --offline --path "$consumer/agent-bridge-acp-0.1.0-alpha.0" --features host --bin agent-bridge-host --root "$consumer/installed" --target-dir "$root/target"
+cargo check --locked --offline --manifest-path "$consumer/agent-bridge-acp-0.1.0-alpha.0/Cargo.toml" --all-features --all-targets --target-dir "$root/target"
 cp "$root/verification/consumer/Cargo.toml" "$consumer/Cargo.toml"
 cp "$root/verification/consumer/upgrade.rs" "$consumer/upgrade.rs"
 cp "$root/examples/rust_integration.rs" "$consumer/rust_integration.rs"

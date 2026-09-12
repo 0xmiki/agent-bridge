@@ -66,6 +66,20 @@ ACP driver. See [installed providers](docs/providers.md) for the API and current
 compatibility evidence. Inspect local installations with
 `cargo run --features providers --example providers`.
 
+## Rust alpha candidate
+
+The Rust package is named `agent-bridge-acp`; its library import remains
+`agent_bridge`. Version `0.1.0-alpha.0` is prepared but not published.
+After publication, applications can preserve their existing imports with:
+
+```toml
+agent-bridge = { package = "agent-bridge-acp", version = "=0.1.0-alpha.0", features = ["acp"] }
+```
+
+Until then, add `path = "../agent-bridge"` with the path to your checkout.
+The host executable remains `agent-bridge-host`. The Bun package remains private;
+this Rust release preparation does not publish it or install provider adapters.
+
 ## Development
 
 Enter the development shell:

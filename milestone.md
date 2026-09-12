@@ -111,7 +111,7 @@ and wire versions, and runs the hosted workflow plus all 56 host tests against t
 installed binary. Linux CI uses the same script; local results are not remote CI
 evidence. See the [release checklist](docs/release.md) for the remaining blockers.
 
-The current crate version is scaffold metadata, not a released alpha.
+The Rust candidate is `agent-bridge-acp 0.1.0-alpha.0`, not a released alpha.
 
 ## Scope and evidence
 
