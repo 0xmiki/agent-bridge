@@ -2,7 +2,8 @@
 
 H4 is in progress. The artifacts are locally installable, but this is not a public
 release. The Rust candidate is `agent-bridge-acp 0.1.0-alpha.0`, with publication
-allowed only to crates.io. It has not been uploaded. The Bun package remains private
+allowed only to crates.io. Confirm publication through the registry before using
+a registry-only dependency. The Bun package remains private
 under its existing `agent-bridge` name and `0.1.0-alpha.0` version.
 The Rust library import stays `agent_bridge`; the executable stays `agent-bridge-host`.
 
@@ -38,7 +39,8 @@ local path. These are local checks, not a remote CI result or independent review
 
 - Confirm availability of the selected Rust name and verify the exact candidate
   with the consumer script and `cargo publish --dry-run --locked --all-features`.
-  The initial registry API lookup returned HTTP 403, so name availability is unconfirmed.
+  The authenticated ownership lookup returned HTTP 404: this crate does not yet exist.
+  Only a successful upload establishes the registry name.
 - Authenticate locally for crates.io publication. Never put a registry token in
   source control or chat. No actual publication is part of the preparation checks.
 - Independent developer review is deferred by the maintainer for this experimental

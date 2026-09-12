@@ -30,8 +30,8 @@ context restoration are implemented in Rust and exposed through the
 [host restart API](docs/host-recovery.md). Uncertain effects require application
 review; the bridge does not replay them automatically.
 
-The [release checklist](docs/release.md) records package-installation evidence and
-the remaining public-alpha blockers. No package has been published.
+The [release checklist](docs/release.md) records package-installation evidence,
+publication status, and the experimental alpha's limits.
 
 Model and option changes can be applied between runs. Requested selections and
 provider-reported settings are stored with each run; later configuration reports
@@ -66,17 +66,17 @@ ACP driver. See [installed providers](docs/providers.md) for the API and current
 compatibility evidence. Inspect local installations with
 `cargo run --features providers --example providers`.
 
-## Rust alpha candidate
+## Rust alpha
 
 The Rust package is named `agent-bridge-acp`; its library import remains
-`agent_bridge`. Version `0.1.0-alpha.0` is prepared but not published.
-After publication, applications can preserve their existing imports with:
+`agent_bridge`. Version `0.1.0-alpha.0` is experimental. Applications can
+preserve their existing imports with this registry dependency:
 
 ```toml
 agent-bridge = { package = "agent-bridge-acp", version = "=0.1.0-alpha.0", features = ["acp"] }
 ```
 
-Until then, add `path = "../agent-bridge"` with the path to your checkout.
+For local development, add `path = "../agent-bridge"` with the path to your checkout.
 The host executable remains `agent-bridge-host`. The Bun package remains private;
 this Rust release preparation does not publish it or install provider adapters.
 
