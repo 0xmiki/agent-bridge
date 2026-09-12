@@ -3,9 +3,23 @@
 An experimental Rust subprocess and Bun TypeScript client for testing agent-bridge
 as an application dependency. It is private development tooling, not a released
 package or network service. Configure trusted local executables and paths.
+The private `agent-bridge` package can now be packed and installed locally. Its
+public imports are `agent-bridge`, `agent-bridge/tools`, `agent-bridge/questions`,
+`agent-bridge/state`, and `agent-bridge/receipts`. It ships TypeScript source for
+Bun; supply the separately built host binary to `new BridgeHost(absolutePath)`.
+For a local archive, install with `bun add /absolute/path/agent-bridge.tgz` and
+import `{ BridgeHost, defineTool }` from `agent-bridge`.
+The isolated consumer check is documented in `verification/consumer/README.md`
+in the repository and runs in Linux CI. Repository-relative examples and links
+below describe development from a checkout.
 The [integration guide](../docs/integration.md) compares this path with direct Rust
 embedding. The [error/ownership contract](../docs/errors-and-ownership.md) defines
 what cancellation, shutdown, observer loss, and storage failures mean.
+
+`session.run(prompt, options)` also accepts selected text context and a runtime-schema
+result contract, separately or together. See [context and results](../docs/host-context-results.md)
+and [the runnable example](interactions-example.ts). A completed run is not necessarily
+a valid result; check `finish.result?.status` before consuming its value.
 
 Install Bun separately (tested with 1.3.13); the Nix shell supplies the Rust toolchain.
 
@@ -68,7 +82,11 @@ ID and either `ok: true, result` or `ok: false, error`. Events carry `event`;
 run events also carry the original request ID as `stream`, plus session/run IDs.
 
 Methods: `ping`, `create_session`, `run`, `cancel`, `respond`, `pending_permissions`, `history`, `snapshot`,
-`changes`, `shutdown`.
+`changes`, `configuration`, `set_option`, `set_model`, `shutdown`.
+Between runs, use `session.configuration()`, `session.setModel(offeredModelId)`,
+or `session.setOption(optionId, taggedValue)`. They return typed catalogs and
+requested/confirmed settings; `session.initialConfiguration` retains the setup
+snapshot. See [configuration](../docs/configuration.md) for errors and uncertainty.
 The opt-in tool callback protocol adds `configure_tools`, `tool_result`, `tool_call`,
 and `tool_cancel`. Registration alone does not authorize calls.
 The host owns identifiers and permission routing. The client imports no ACP SDK.

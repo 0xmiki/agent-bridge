@@ -1,10 +1,9 @@
 # Integration quality gates
 
 Working acceptance criteria, September 7, 2026. Revise these when an integration
-exposes a better requirement. The independent review rated the pre-host architecture
-7/10 and roadmap 6/10. These gates are its proposed route toward a defensible 9/10,
-not a promise that a test count produces a score. A 10/10 assessment would need
-sustained consumer, release, upgrade, and provider-change evidence.
+exposes a better requirement. These gates require evidence from application
+integration, failure tests, package installation, and database upgrades. Continued
+compatibility requires checks as providers and release artifacts change.
 The [H1 acceptance audit](h1-acceptance.md) records which parts of gates 1–3 are
 established for the Linux hosted proof and which release/recovery limits remain.
 
@@ -87,6 +86,8 @@ shared transport or fairness between provider output streams.
 - Reject spoofed identities, stale revisions, cross-session responses, and expired questions.
 - Cancellation reaches application handlers; duplicate decisions have one outcome.
 - Exercise a real application tool per supported provider through the host.
+- Deliver explicit selected context and validate returned JSON separately from provider completion.
+- Reject invalid selections/contracts before dispatch; retain delivery and validation evidence.
 
 Rust tool/question/grant APIs exist. Host tests reject foreign permission tokens,
 stale run IDs, invalid options, and duplicate responses while preserving valid pending
@@ -98,8 +99,11 @@ after unknown outcomes. OpenCode and Codex passed the live callback/token check.
 Hosted tool-scoped questions validate and atomically store answers. Fixtures cover
 wrong scope/revision, identical and conflicting answers, failed writes, cancellation,
 deadlines, pending-form recovery, bounded admission, and exact reopened state. Both
-providers passed a scripted question round trip. Selected context and validated
-agent results remain open in H2.
+providers passed a scripted question round trip. Hosted configuration discovery and
+model/option selection preserve per-run settings. [Context and results](host-context-results.md)
+now pass fixtures, the packaged consumer, and live OpenCode/Codex checks. Text context
+is appended to native history; results use host validation, not native enforcement.
+Recording failures cannot expose a valid result. This completes H2 within that scope.
 
 ## 5. Restart and uncertainty
 

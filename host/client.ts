@@ -1,6 +1,19 @@
 /** Experimental v1 client. No ACP SDK objects cross this boundary. */
 import { spawn } from "bun";
-import type { ReceiptView } from "./receipts";
+import type { ReceiptView, Rejection } from "./receipts";
+import type { ConfigurationValue } from "./receipts";
+export type { ConfigurationValue } from "./receipts";
+export interface ConfigurationOption {
+  id: string; label: string; description: string | null; category: string | null;
+  current: ConfigurationValue;
+  choices: { value: string; label: string; description: string | null; group: string | null }[];
+}
+export interface SessionConfiguration {
+  options: ConfigurationOption[] | null;
+  values: { requested: Record<string, ConfigurationValue>; confirmed: Record<string, ConfigurationValue> | null };
+  pending: boolean;
+  uncertain: boolean;
+}
 import { ToolClient, type ApplicationTool, type ToolReference } from "./tools";
 import {QuestionClient, type QuestionHandle} from "./questions";
 export type {QuestionDefinition,AnswerOutcome,QuestionHandle} from "./questions";
@@ -11,11 +24,16 @@ export interface StoredRecord { id: string; session_id: string; run_id: string |
 export interface HistoryPage { records: StoredRecord[]; next_after: string | null; page_full: boolean }
 export interface ChangeCursor { epoch: string; session_id: string; position: string }
 export interface StatePage extends HistoryPage { cursor: ChangeCursor }
+export interface RunOptions {
+  context?: {mode:"append_to_native"; records?:string[]; resources?:{id:string;revision:string;media_type:"text/plain"|"text/markdown";text:string}[]};
+  result?: {name:string;revision:string;schema:unknown;max_validation_bytes:number;mode:"validate_returned_text"};
+}
+export type ValidatedResult = {status:"valid";value:unknown} | {status:"rejected";rejection:Rejection} | {status:"unavailable"};
 function startHost(binary: string) { return spawn([binary], { stdin: "pipe", stdout: "pipe", stderr: "inherit" }); }
 export type RunEvent = Readonly<
   | { event: "text_delta"; session_id: string; run_id: string; text: string }
   | { event: "permission"; session_id: string; run_id: string; permission_id: string; title: string | null; options: readonly Readonly<{ id: string; label: string; effect: string }>[] }
-  | { event: "run_finished"; session_id: string; run_id: string; status: string; reason: string | null; recording_error: string | null }>;
+  | { event: "run_finished"; session_id: string; run_id: string; status: string; reason: string | null; recording_error: string | null; result?:ValidatedResult|null }>;
 export interface SubscriptionOptions { maxEvents?: number; maxBytes?: number }
 export interface RunSubscription extends AsyncIterable<RunEvent> { close(): void }
 export class SubscriptionLaggedError extends Error {
@@ -25,6 +43,10 @@ export class SubscriptionLaggedError extends Error {
 type Finish = Extract<RunEvent, { event: "run_finished" }>;
 export type PendingPermission = Extract<RunEvent, { event: "permission" }>;
 function freezeEvent(event: RunEvent) {
+  if (event.event === "run_finished" && event.result) {
+    const freeze = (value: unknown): void => { if(value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } };
+    freeze(event.result);
+  }
   if (event.event === "permission") { event.options.forEach(Object.freeze); Object.freeze(event.options); }
   return Object.freeze(event);
 }
@@ -117,8 +139,11 @@ export class HostRun {
 }
 
 export class HostSession {
-  constructor(private host: BridgeHost, readonly id: string, readonly slotId: string, readonly database: string) {}
-  run(prompt: string) { return this.host.startRun(this.id, prompt); }
+  constructor(private host: BridgeHost, readonly id: string, readonly slotId: string, readonly database: string, readonly initialConfiguration?: SessionConfiguration) {}
+  configuration(): Promise<SessionConfiguration> { return this.host.request("configuration", {session_id:this.id}); }
+  setOption(optionId: string, value: ConfigurationValue): Promise<SessionConfiguration> { return this.host.request("set_option", {session_id:this.id, option_id:optionId, value}); }
+  setModel(model: string): Promise<SessionConfiguration> { return this.host.request("set_model", {session_id:this.id, model}); }
+  run(prompt: string, options?: RunOptions) { return this.host.startRun(this.id, prompt, options); }
   history(after?: string, limit = 1000) { return this.host.history(this.database, this.id, after, limit); }
   snapshot(cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.host.snapshot(this.database, this.id, cursor, after, limit); }
   changes(cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.host.changes(this.database, this.id, cursor, limit); }
@@ -200,13 +225,13 @@ export class BridgeHost {
     const allow = allowTools.map(({name,revision})=>({name,revision}));
     const result = await this.request("create_session", {...launch,allow_tools:allow});
     this.tools.bind(result.tool_binding_id,result.session_id,result.slot_id,allow);
-    return new HostSession(this, result.session_id, result.slot_id, options.database);
+    return new HostSession(this, result.session_id, result.slot_id, options.database, result.session_configuration);
   }
-  startRun(sessionId: string, prompt: string) {
+  startRun(sessionId: string, prompt: string, options?: RunOptions) {
     const id = `request-${++this.nextId}`;
     const start = deferred<{ run_id: string }>();
     const run = new HostRun(this, sessionId, start.promise); this.runs.set(id, run);
-    this.send("run", { session_id: sessionId, prompt }, id).then(start.resolve, error => { start.reject(error); run.fail(error); this.runs.delete(id); });
+    this.send(options === undefined ? "run" : "run_task", { session_id: sessionId, prompt, options }, id).then(start.resolve, error => { start.reject(error); run.fail(error); this.runs.delete(id); });
     return run;
   }
   history(database: string, sessionId: string, after?: string, limit = 1000): Promise<HistoryPage> { return this.request("history", { database, session_id: sessionId, after, limit }); }

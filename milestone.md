@@ -1,6 +1,6 @@
 # Working milestones
 
-Updated September 8, 2026. Revise this plan when evidence warrants it and record why.
+Updated September 12, 2026. Revise this plan when evidence warrants it and record why.
 The previous M0–M8 plan and evidence remain in [milestone history](milestone-history.md).
 
 ## Product promise
@@ -42,34 +42,39 @@ exposes typed adapter events; the Bun client uses host DTOs. Acceptance:
 H1 acceptance, checks, and retained limitations are recorded in
 [h1-acceptance.md](docs/h1-acceptance.md). This completes the integration proof; it
 does not release an alpha or claim equivalent runtime guarantees for every embedding
-path. H2 below tracks hosted interactions. Tools and tool-scoped questions are
-implemented; context and result handling are the remaining work.
+path. H2 below records the hosted interaction scope and its evidence.
 
 Test hygiene: disposable Codex checks must request provider session cleanup after
 verification. `host/example.ts` enables this automatically for codex-acp launches;
 custom wrappers must set `AGENT_BRIDGE_CODEX_TEST=1`. The pinned adapter archives the
 thread out of active history. Cleanup failure must be reported, not silently ignored.
 
-## H2 — Application interactions (in progress)
+## H2 — Application interactions (complete within documented scope)
 
-Outcome: tools and questions use the same integration. Acceptance: quality gate 4.
+Outcome: tools, questions, selected context, configuration, and validated results use
+the same integration. Acceptance: quality gate 4 and the documented checks below.
 
 - [x] Hosted application tools with runtime schemas and live application handlers.
 - [x] Derive MCP bindings from grants; reject stale revisions, wrong capabilities, and cross-scope results.
 - [x] Tool cancellation, bounded calls, once-only result acceptance, and typed receipts; unknown outcomes retire the binding.
 - [x] Real hosted tool invocation with OpenCode and Codex, including Codex test-thread cleanup.
 - [x] Tool-scoped hosted structured questions and atomic answers, with cancellation, pending-form recovery, and live OpenCode/Codex checks.
-- [ ] Hosted selected-context delivery and validated agent results.
+- [x] Hosted selected-context delivery and validated agent results, including combined runs, pre-dispatch rejection, recording failures, and live OpenCode/Codex checks.
+- [x] Hosted configuration discovery and model/option changes between runs, with packaged-consumer and fixture checks.
 
 Use existing Rust primitives. Add child APIs when an acceptance scenario establishes
 application ownership; a general multi-agent scheduler is not required.
 The first tool workflow is documented in [host-tools.md](docs/host-tools.md). It uses
 Unix IPC with Linux verification and a bounded runtime-schema subset.
 [Hosted questions](docs/host-questions.md) reuse the same invocation ownership and
-record validated answers. Next slice: selected-context delivery and validated agent
-results through the host. Standalone hosted questions remain an extension to consider
-when an acceptance scenario needs them.
-This does not complete H2 or the post-crash recovery contract.
+record validated answers. [Context and results](docs/host-context-results.md) deliver
+same-session selected messages and explicit text resources, then validate returned
+JSON against a bounded runtime schema. The packaged consumer combines this with tools
+and questions; live OpenCode and Codex checks preserve exact reopened receipts.
+Standalone hosted questions remain an extension to consider when an acceptance
+scenario needs them. This completes H2's Linux text-context and host-validation scope,
+not native schema enforcement, media/instruction delivery, or post-crash recovery.
+Next: H3 unfinished-work discovery and explicit uncertainty accounting.
 
 ## H3 — Local restart contract (planned)
 
@@ -93,6 +98,12 @@ Outcome: an independent developer installs packages and succeeds. Acceptance: ga
 - [ ] Lifecycle and descendant cleanup on every advertised OS.
 - [ ] Independent consumer integration/review; resolve release blockers.
 
+The [packaged Bun consumer](verification/consumer/README.md) now installs a local
+TypeScript tarball outside the checkout and exercises streaming, tools, questions,
+cancellation, shutdown, and reopened state through declared package imports. Linux
+CI runs it against the deterministic provider. Rust package installation, live
+provider checks against artifacts, and independent developer review remain open.
+
 The current crate version is scaffold metadata, not a released alpha.
 
 ## Scope and evidence
@@ -107,6 +118,5 @@ Defer full Tauri packaging, all three app migrations, remote stores, non-ACP dri
 native internal subagent control, general routing/scheduling, and broad native skill/output
 parity. A small Tauri probe is appropriate for a concrete lifecycle question.
 
-The independent pre-host review rated architecture 7/10 and roadmap 6/10. A defensible
-9/10 needs integration and fault guarantees; 10/10 needs sustained consumer and release
-evidence. No milestone or test count automatically earns a score.
+Release readiness requires demonstrated application integration, explicit failure
+behavior, and installation and upgrade checks against release artifacts.

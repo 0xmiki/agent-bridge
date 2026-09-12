@@ -262,3 +262,38 @@ the thread out of active history rather than permanently erasing it.
 Questions currently belong to live granted tool invocations. Selected context and
 validated agent results remain the next H2 slice. Standalone hosted forms, native
 ACP elicitation, post-crash responders, and non-Linux lifecycle remain unverified.
+
+## H2 context and validated results, September 12
+
+192 Rust tests and 51 Bun host tests passed, along with Clippy, rustfmt, TypeScript
+checking, standalone core/receipts/dynamic-tools compilation, and the packaged
+consumer workflow. Option-bearing runs use a distinct `run_task` command so an
+older host rejects them instead of silently omitting requested interactions.
+
+The host now accepts selected same-session messages and explicit text/Markdown
+resources, separately or together with a runtime-schema result contract. It reuses
+Rust context preparation, recorded dispatch, JSON candidate selection, validation,
+and typed receipts. The schema compiler is shared with dynamic application tools.
+
+Fixture checks cover exact encoded delivery and reopened history, foreign/missing
+records, unsupported modes/media/fields, conflicting revisions, byte/item limits,
+unsupported schemas, malformed/ambiguous/non-text/oversized output, cancellation,
+and failed input/contract/validation writes. Failed recording never exposes a valid
+result. The packaged consumer combines context and results with a granted tool and
+scripted question, then cancels another invocation and reopens exact saved state.
+
+Live `interactions-example.ts` checks passed with OpenCode 1.18.25 and Codex CLI
+0.154.0 through codex-acp 1.10.0. Each returned a fresh token supplied only in a text
+resource, then completed a second validated turn with selected message history.
+Exact reopened history contained 20 and 23 records respectively. Native history
+remained present, so this does not demonstrate history replacement or restoration.
+Evidence is retained locally under `/tmp/agent-bridge-h2-live-DjHalOmo`.
+
+Codex cleanup succeeded. A read-only query for that exact disposable workspace
+confirmed test thread `01a09702-7ef1-7973-bd48-85e8b59ce81d` had `archived = 1`.
+The Nix wrapper printed a temporary Node compile-cache cleanup warning after the
+successful check; provider cleanup and exact reopened-history assertions passed.
+
+H2 is complete for the [documented text-context and validation scope](../docs/host-context-results.md).
+Native result enforcement, hosted media/instruction grants, standalone questions,
+Claude authentication, non-Linux lifecycle, and H3 crash recovery are not established.

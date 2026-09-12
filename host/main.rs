@@ -1,4 +1,5 @@
 //! Experimental owned ACP host. Stdout is exclusively protocol v1 JSON-lines.
+mod interactions;
 mod output;
 mod questions;
 mod receipts;
@@ -115,6 +116,15 @@ fn snapshot(value: &Snapshot) -> Value {
     json!({"id":record.id.as_str(),"session_id":record.session_id.as_str(),"run_id":record.run_id.as_ref().map(|id|id.as_str()),
         "actor":record.actor.as_str(),"sequence":record.sequence.to_string(),"revision":value.revision.to_string(),"state":value.state,"payload":record.payload,"receipt":receipts::view(&record.payload),
         "reply_to_id":record.reply_to_id.as_ref().map(|id|id.as_str()),"source":value.source})
+}
+fn configuration(value: agent_bridge::SessionConfiguration) -> Value {
+    let options = value.options.map(|options| options.into_iter().map(|option| {
+        json!({"id":option.id,"label":option.label,"description":option.description,
+            "category":option.category,"current":option.current,
+            "choices":option.choices.into_iter().map(|choice| json!({"value":choice.value,
+                "label":choice.label,"description":choice.description,"group":choice.group})).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>());
+    json!({"options":options,"values":value.values,"pending":value.pending,"uncertain":value.uncertain})
 }
 fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
     let store =
@@ -238,16 +248,58 @@ async fn session_worker(
             _ = output.stop.cancelled() => return Ok::<_, String>(()),
             result = connection.new_session(SessionId::new(&session_id).unwrap(), SlotId::new(&slot_id).unwrap(), open.workspace, mcp) => result.map_err(|e|e.to_string())?,
         };
-        output.ok(&create_id,json!({"session_id":session_id,"slot_id":slot_id,"configuration":session.configuration().values,"tool_binding_id":binding.as_ref().map(|b|&b.id)}));
+        let initial = session.configuration();
+        output.ok(&create_id,json!({"session_id":session_id,"slot_id":slot_id,"configuration":initial.values,"session_configuration":configuration(initial.clone()),"tool_binding_id":binding.as_ref().map(|b|&b.id)}));
         loop {
             let request = tokio::select! { _ = output.stop.cancelled()=>break, request=commands.recv()=>match request { Some(request)=>request,None=>break } };
-            if request.method != "run" { output.error(&request.id,"not_running","session has no active run"); continue; }
+            if request.method == "configuration" {
+                output.ok(&request.id, configuration(session.configuration()));
+                continue;
+            }
+            if request.method == "set_option" || request.method == "set_model" {
+                let result = tokio::select! {
+                    _ = output.stop.cancelled() => break,
+                    result = async {
+                        if request.method == "set_model" {
+                            let model = string(&request.params,"model").map_err(str::to_owned)?;
+                            session.set_model(model).await.map_err(|error| error.to_string())
+                        } else {
+                            let id = string(&request.params,"option_id").map_err(str::to_owned)?;
+                            let value = serde_json::from_value(request.params["value"].clone()).map_err(|error| error.to_string())?;
+                            session.set_option(id,value).await.map_err(|error| error.to_string())
+                        }
+                    } => result,
+                };
+                match result {
+                    Ok(value) => output.ok(&request.id, configuration(value)),
+                    Err(error) => output.error(&request.id,"configuration_failed",error),
+                }
+                continue;
+            }
+            if !matches!(request.method.as_str(), "run" | "run_task") { output.error(&request.id,"not_running","session has no active run"); continue; }
             let prompt = match string(&request.params,"prompt") { Ok(prompt)=>prompt,Err(error)=>{output.error(&request.id,"invalid_params",error);continue;} };
             let run_id = identity("run");
+            let options = (|| -> Result<_, String> {
+                let options: interactions::Options = serde_json::from_value(request.params.get("options").cloned().unwrap_or(json!({}))).map_err(|e|e.to_string())?;
+                Ok((options.context.map(|context| context.prepare()).transpose()?, options.result.map(|result|result.contract()).transpose()?))
+            })();
+            let (context, contract) = match options { Ok(options)=>options, Err(error)=>{output.error(&request.id,"invalid_params",error);continue;} };
             if let Some(binding) = &binding && let Err(error) = binding.begin() { output.error(&request.id,"tool_binding_retired",error); continue; }
-            let mut run = match session.start_recorded_run(RunId::new(&run_id).unwrap(),prompt,store.as_ref(),RecordActors {
+            let actors = RecordActors {
                 user:ActorId::new("user").unwrap(),agent:ActorId::new("assistant").unwrap(),host:ActorId::new("host").unwrap(),
-            }) { Ok(run)=>run,Err(error)=>{if let Some(binding) = &binding { binding.end(); } output.error(&request.id,"start_failed",error);continue;} };
+            };
+            let id = RunId::new(&run_id).unwrap();
+            let started = if let Some(contract) = &contract {
+                let task = agent_bridge::acp::JsonTask {prompt, contract, mode:agent_bridge::acp::JsonOutputMode::ValidateReturnedText};
+                if let Some((manifest, resources)) = &context {
+                    session.start_recorded_context_json_run(id, task, interactions::context_task(prompt, manifest, resources), store.as_ref(), actors)
+                } else { session.start_recorded_json_run(id, task, store.as_ref(), actors) }.map(interactions::HostedRun::Json)
+            } else {
+                if let Some((manifest, resources)) = &context {
+                    session.start_recorded_context_run(id, interactions::context_task(prompt, manifest, resources), store.as_ref(), actors)
+                } else { session.start_recorded_run(id, prompt, store.as_ref(), actors) }.map(interactions::HostedRun::Plain)
+            };
+            let mut run = match started { Ok(run)=>run,Err(error)=>{if let Some(binding) = &binding { binding.end(); } output.error(&request.id,"start_failed",error);continue;} };
             output.ok(&request.id,json!({"run_id":run_id,"session_id":session_id}));
             let mut permissions: HashMap<String, (agent_bridge::acp::PermissionId, Value)> = HashMap::new();
             let mut reason = None; let mut failure = None;
@@ -257,7 +309,7 @@ async fn session_worker(
                     _ = output.stop.cancelled() => { let _=run.cancel(); break; },
                     command = commands.recv() => {
                         let Some(command)=command else { let _=run.cancel(); break; };
-                        if command.method == "run" { output.error(&command.id,"session_busy","session already has an active run"); continue; }
+                        if matches!(command.method.as_str(), "run" | "run_task" | "configuration" | "set_option" | "set_model") { output.error(&command.id,"session_busy","session already has an active run"); continue; }
                         if command.params["run_id"].as_str() != Some(run_id.as_str()) { output.error(&command.id,"stale_run","run ID is not active"); continue; }
                         match command.method.as_str() {
                             "pending_permissions" => {
@@ -297,10 +349,11 @@ async fn session_worker(
                 }
             }
             let status=if failure.is_some() { "unknown" } else { state(run.run().status()) };
+            let result=if failure.is_some() && contract.is_some() { json!({"status":"unavailable"}) } else { run.result() };
             drop(run);
             if let Some(binding) = &binding { binding.end(); }
             if output.stop.is_cancelled() { break; }
-            output.emit(json!({"event":"run_finished","stream":request.id,"session_id":session_id,"run_id":run_id,"status":status,"reason":reason,"recording_error":failure}));
+            output.emit(json!({"event":"run_finished","stream":request.id,"session_id":session_id,"run_id":run_id,"status":status,"reason":reason,"recording_error":failure,"result":result}));
         }
         if open.delete_session_on_close {
             if let Err(error) = session.delete().await {
@@ -572,7 +625,14 @@ fn main() {
                     }
                 }));
             }
-            "run" | "cancel" | "respond" | "pending_permissions" => {
+            "run"
+            | "run_task"
+            | "cancel"
+            | "respond"
+            | "pending_permissions"
+            | "configuration"
+            | "set_option"
+            | "set_model" => {
                 let id = match string(&request.params, "session_id") {
                     Ok(id) => id,
                     Err(error) => {

@@ -1,0 +1,6 @@
+{
+  "name": "agent-bridge-consumer",
+  "private": true,
+  "type": "module",
+  "dependencies": { "agent-bridge": "file:./agent-bridge.tgz" }
+}

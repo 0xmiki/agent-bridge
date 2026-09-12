@@ -590,7 +590,7 @@ impl<'connection> AcpSession<'connection> {
         self.dispatch_blocks(spec, text, blocks)
     }
 
-    fn dispatch_blocks(
+    pub(super) fn dispatch_blocks(
         &mut self,
         spec: RunSpec,
         text: String,

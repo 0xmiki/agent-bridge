@@ -34,6 +34,43 @@ cannot use the session setter while that run handle remains alive. Finish and dr
 the run handle before changing settings. The application session and native session
 IDs stay the same across supported model changes.
 
+## Bun host API
+
+The packaged client exposes `session.initialConfiguration` as the setup snapshot.
+Read current options and apply changes between runs:
+
+```ts
+const configuration = await session.configuration();
+const models = configuration.options?.filter(option => option.category === "model");
+if (models?.length === 1 && models[0].choices.length > 0) {
+  const updated = await session.setModel(models[0].choices[0].value);
+  console.log(updated.values.confirmed);
+}
+// For other options, pass an offered ID and the appropriate tagged value:
+// await session.setOption(optionId, { type: "boolean", value: true });
+```
+
+These methods use host commands `configuration`, `set_model`, and `set_option`.
+The latter takes `option_id` and `value`; `set_model` takes `model`. Each command
+includes `session_id`. Reads and setters return the complete catalog, requested and
+confirmed values, and `pending`/`uncertain` flags. An absent catalog is `null`.
+The setup response retains its original `configuration` values field and adds
+`session_configuration` for the full snapshot.
+
+The host rejects these operations during a run with `session_busy`. Await
+`run.completed` before changing settings. Invalid selections and provider errors
+return `configuration_failed`; read `configuration()` afterward to inspect whether
+the provider's state remains known. Commands on one session are serialized. A
+pending setter delays subsequent commands on that session until its response or
+the adapter's 30-second timeout; other sessions and host shutdown remain available.
+There are no automatic retries. Shutdown can interrupt waiting but cannot undo a
+configuration request already sent.
+
+The packaged consumer exercises model changes between turns. Host tests cover
+invalid choices, booleans, dependent options, frozen run settings, unsupported
+providers, busy sessions, uncertain provider errors, and shutdown during a stalled
+setter. These fixture checks do not add new live-provider compatibility claims.
+
 ## What is recorded
 
 Each default `RunSpec` contains a `RunConfiguration`:

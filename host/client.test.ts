@@ -6,7 +6,7 @@ import {createConnection} from "node:net";
 import type {QuestionDefinition,QuestionHandle,AnswerOutcome} from "./questions";
 import {QuestionClient} from "./questions";
 import { join, resolve } from "node:path";
-import { BridgeHost, type HostRun, type RunEvent, type StoredRecord } from "./client";
+import { BridgeHost, type HostRun, type RunEvent, type StoredRecord, type RunOptions } from "./client";
 import { SessionState } from "./state";
 import { readReceipt } from "./receipts";
 import {defineTool, type ToolContext, type Json} from "./tools";
@@ -54,6 +54,132 @@ function messageText(record: StoredRecord) {
   const data = record.payload.data as { message: { content: { type: string; data: string }[] } };
   return data.message.content.map(part => { expect(part.type).toBe("text"); return part.data; }).join("");
 }
+
+const countResult: NonNullable<RunOptions["result"]> = {name:"count",revision:"v1",mode:"validate_returned_text",max_validation_bytes:4096,
+  schema:{type:"object",properties:{count:{type:"integer",minimum:1}},required:["count"],additionalProperties:false}};
+
+test("selected context and validated results retain exact delivery and reopen evidence", async () => {
+  const host = new BridgeHost(binary);
+  const messages = join(directory,"selected-messages");
+  const launch = options("selected", "json-valid", {BRIDGE_TEST_MESSAGES:messages});
+  let saved: StoredRecord[] = []; let sessionId = "";
+  try {
+    const session = await host.createSession(launch); sessionId = session.id;
+    const first = session.run("Remember the selected turn"); await text(first);
+    const selected = (await session.history()).records.find(record=>record.payload.type==="message" && record.actor==="user")!;
+    const context: NonNullable<RunOptions["context"]> = {mode:"append_to_native",records:[selected.id],resources:[{id:"brief",revision:"r1",media_type:"text/markdown",text:"Selected application brief"}]};
+    const run = session.run("Count the selected work", {context,result:countResult});
+    expect(await text(run)).toBe('{"count":3}');
+    expect((await run.completed).result).toEqual({status:"valid",value:{count:3}});
+    expect(Object.isFrozen((await run.completed).result)).toBe(true);
+    saved = (await session.history()).records;
+    const receipts = saved.map(readReceipt);
+    const input = receipts.find(r=>r?.kind==="input" && r.data.state==="prepared");
+    if (input?.kind!=="input" || input.data.state!=="prepared") throw new Error("missing input");
+    const wire = JSON.parse(input.data.wire_text);
+    expect(wire.history.map((r:any)=>r.id)).toEqual([selected.id]);
+    expect(wire.resources[0].text).toBe("Selected application brief");
+    expect(JSON.parse(wire.task).task).toBe("Count the selected work");
+    const prompts = readFileSync(messages,"utf8").trim().split("\n").map(line=>JSON.parse(line)).filter(frame=>frame.method==="session/prompt");
+    expect(prompts.at(-1).params.prompt[0].text).toBe(input.data.wire_text);
+    expect(receipts.some(r=>r?.kind==="result_validation" && r.data.validation.status==="valid")).toBe(true);
+    const plain = session.run("Context without a result contract", {context}); await text(plain);
+    expect((await plain.completed).result).toBeNull();
+    saved = (await session.history()).records;
+  } finally { await host.close(); }
+  const reopened = new BridgeHost(binary);
+  try { expect((await reopened.history(launch.database,sessionId)).records).toEqual(saved); }
+  finally { await reopened.close(); }
+});
+
+test("invalid context and result contracts never dispatch", async () => {
+  const host = new BridgeHost(binary);
+  const messages = join(directory,"invalid-selection-messages");
+  try {
+    const launch = options("invalid-selection","chat",{BRIDGE_TEST_MESSAGES:messages});
+    const session = await host.createSession(launch);
+    const foreign = await host.createSession({...launch,env:{}});
+    await text(foreign.run("Foreign history"));
+    const record = (await foreign.history()).records.find(r=>r.payload.type==="message")!;
+    const resource = {id:"brief",revision:"v1",media_type:"text/plain",text:"brief"};
+    const invalid = [
+      {context:{mode:"replace_native"}},
+      {context:{mode:"append_to_native",records:[record.id]}},
+      {context:{mode:"append_to_native",records:["missing"]}},
+      {context:{mode:"append_to_native",instructions:[]}},
+      {context:{mode:"append_to_native",resources:[{...resource,media_type:"image/png"}]}},
+      {context:{mode:"append_to_native",resources:[resource,{...resource,text:"conflict"}]}},
+      {context:{mode:"append_to_native",resources:[{...resource,text:"x".repeat(262145)}]}},
+      {context:{mode:"append_to_native",records:Array(129).fill("missing")}},
+      {result:{...countResult,mode:"require_native_enforcement"}},
+      {result:{...countResult,schema:{$ref:"https://example.invalid/schema"}}},
+      {result:{...countResult,max_validation_bytes:0}},
+      {result:{...countResult,max_validation_bytes:65537}},
+    ];
+    for (const value of invalid) {
+      const run = session.run("Must not dispatch", value as RunOptions); run.events.close();
+      await run.started.then(()=>{throw new Error("invalid task started");},error=>expect(["invalid_params","start_failed"]).toContain(error.code));
+      await expect(run.completed).rejects.toBeDefined();
+    }
+    expect(readFileSync(messages,"utf8")).not.toContain('"method":"session/prompt"');
+    expect((await session.history()).records).toEqual([]);
+    await text(session.run("Still usable"));
+  } finally { await host.close(); }
+});
+
+test("result rejection is distinct from provider completion and cancellation", async () => {
+  const host = new BridgeHost(binary);
+  try {
+    const cases = [
+      ["json-valid",{...countResult,schema:{type:"object",properties:{count:{const:4}}}},"invalid_value"],
+      ["chat",countResult,"invalid_json"],
+      ["json-valid",{...countResult,max_validation_bytes:1},"output_too_large"],
+      ["json-ambiguous",countResult,"ambiguous_output"],
+      ["json-image",countResult,"non_text_output"],
+      ["json-truncated",countResult,"incomplete"],
+      ["json-pending",countResult,"incomplete"],
+    ] as const;
+    for (const [index,[mode,result,kind]] of cases.entries()) {
+      const session = await host.createSession(options(`result-reject-${index}`,mode));
+      const run = session.run("Return JSON",{result});
+      const draining = (async()=>{for await(const event of run.events) {if(mode==="json-pending" && event.event==="text_delta") await run.cancel();}})();
+      await draining;
+      const finish = await run.completed;
+      expect(finish.recording_error).toBeNull();
+      expect(finish.result).toMatchObject({status:"rejected",rejection:{kind}});
+      if(mode==="json-valid") expect(finish.status).toBe("completed");
+      if(mode==="json-pending") expect(finish.status).toBe("cancelled");
+      const receipts = (await session.history()).records.map(readReceipt);
+      expect(receipts.some(r=>r?.kind==="result_validation" && r.data.validation.status==="rejected" && r.data.validation.rejection.kind===kind)).toBe(true);
+    }
+  } finally { await host.close(); }
+});
+
+test("failed interaction evidence cannot dispatch inputs or expose a valid result", async () => {
+  const host = new BridgeHost(binary);
+  try {
+    for(const stage of ["input_receipt","result_contract","result_validation"]) {
+      const messages = join(directory,`evidence-${stage}-messages`);
+      const session = await host.createSession(options(`evidence-${stage}`,"json-valid",{BRIDGE_TEST_MESSAGES:messages}));
+      const sql = new Database(session.database);
+      try {
+        sql.exec(`CREATE TRIGGER fail_interaction BEFORE INSERT ON agent_bridge_records
+          WHEN NEW.payload_json LIKE '%"name":"${stage}"%' BEGIN SELECT RAISE(ABORT,'injected evidence failure'); END;`);
+      } finally {sql.close();}
+      const run = session.run("Return JSON", {context:{mode:"append_to_native"},result:countResult});
+      run.events.close();
+      if(stage==="result_validation") {
+        const finish = await run.completed;
+        expect(finish.status).toBe("unknown"); expect(finish.recording_error).toBeString();
+        expect(finish.result).toEqual({status:"unavailable"});
+      } else {
+        await expect(run.started).rejects.toHaveProperty("code","start_failed");
+        expect(readFileSync(messages,"utf8")).not.toContain('"method":"session/prompt"');
+      }
+      expect((await session.history()).records.map(readReceipt).some(r=>r?.kind==="result_validation" && r.data.validation.status==="valid")).toBe(false);
+    }
+  } finally {await host.close();}
+});
 
 test("distinct interleaved sessions retain their own context and exact history after restart", async () => {
   const host = new BridgeHost(binary);
@@ -151,6 +277,78 @@ test("SQLite lock failure is explicit while another session runs and cancels wit
     await host.close();
   }
 }, 15000);
+
+test("host configuration validates choices and freezes per-run settings across model changes", async () => {
+  const messages = join(directory, "host-config-messages");
+  const config = options("host-config", "config", {BRIDGE_TEST_MESSAGES:messages});
+  const host = new BridgeHost(binary);
+  try {
+    const session = await host.createSession(config);
+    expect(await session.configuration()).toEqual(session.initialConfiguration!);
+    expect(session.initialConfiguration?.options?.find(option => option.category === "model")?.choices.map(choice => choice.value)).toEqual(["model-a", "model-b"]);
+    await expect(session.setModel("missing")).rejects.toHaveProperty("code", "configuration_failed");
+    await expect(session.setOption("missing", {type:"boolean",value:true})).rejects.toHaveProperty("code", "configuration_failed");
+    await expect(session.setOption("model", {type:"boolean",value:true})).rejects.toHaveProperty("code", "configuration_failed");
+    await expect(host.request("set_option", {session_id:session.id,option_id:"toggle",value:{type:"boolean",value:"true"}})).rejects.toHaveProperty("code", "configuration_failed");
+    expect(readFileSync(messages,"utf8")).not.toContain("session/set_config_option");
+    const runs: string[] = [];
+    for (const model of ["model-a", "model-b"]) {
+      const changed = await session.setModel(model);
+      expect(changed.values.confirmed?.model).toEqual({type:"select",value:model});
+      expect(changed.options?.find(option => option.id === "effort")?.current).toEqual({type:"select",value:model === "model-a" ? "high" : "low"});
+      expect((await session.setOption("toggle", {type:"boolean",value:true})).values.confirmed?.toggle).toEqual({type:"boolean",value:true});
+      const run = session.run("hello");
+      expect(await text(run)).toBe("Hello world");
+      runs.push((await run.completed).run_id);
+    }
+    const sql = new Database(config.database, {readonly:true});
+    try {
+      for (const [index, id] of runs.entries()) {
+        const row = sql.query("SELECT config_json FROM agent_bridge_runs WHERE id = ?").get(id) as {config_json:string};
+        const stored = JSON.parse(row.config_json).data;
+        const model = {type:"select",value:index === 0 ? "model-a" : "model-b"};
+        expect(stored.requested.model).toEqual(model);
+        expect(stored.confirmed.model).toEqual(model);
+      }
+    } finally { sql.close(); }
+    const unsupported = await host.createSession(options("host-config-unsupported"));
+    expect((await unsupported.configuration()).options).toBeNull();
+    await expect(unsupported.setModel("model-a")).rejects.toHaveProperty("code", "configuration_failed");
+    const active = await host.createSession(options("host-config-busy", "cancel"));
+    const run = active.run("wait");
+    await run.started;
+    await expect(active.setModel("model-b")).rejects.toHaveProperty("code", "session_busy");
+    await expect(active.configuration()).rejects.toHaveProperty("code", "session_busy");
+    await run.cancel();
+    await text(run);
+    expect((await run.completed).status).toBe("cancelled");
+  } finally { await host.close(); }
+});
+
+test("provider configuration failure stays uncertain and prevents dispatch", async () => {
+  const host = new BridgeHost(binary);
+  try {
+    const session = await host.createSession(options("host-config-error", "config-error"));
+    await expect(session.setModel("model-b")).rejects.toHaveProperty("code", "configuration_failed");
+    const config = await session.configuration();
+    expect(config.uncertain).toBe(true);
+    expect(config.values.confirmed).toBeNull();
+    await expect(session.run("must not run").started).rejects.toHaveProperty("code", "start_failed");
+  } finally { await host.close(); }
+});
+
+test("shutdown interrupts a stalled configuration setter", async () => {
+  const messages = join(directory, "host-config-hang-messages");
+  const host = new BridgeHost(binary);
+  try {
+    const session = await host.createSession(options("host-config-hang", "config-hang", {BRIDGE_TEST_MESSAGES:messages}));
+    const setter = session.setModel("model-b");
+    const rejected = setter.catch(error => error);
+    await until(() => existsSync(messages) && readFileSync(messages,"utf8").includes("session/set_config_option"));
+    await within(host.close());
+    expect(await rejected).toBeInstanceOf(Error);
+  } finally { await host.close(); }
+});
 
 test("cancellation and permission responses are routed without ACP objects", async () => {
   const host = new BridgeHost(binary);

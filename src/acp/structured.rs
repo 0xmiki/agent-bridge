@@ -35,6 +35,58 @@ impl<'connection> AcpSession<'connection> {
         actors: RecordActors,
     ) -> Result<RecordedJsonRun<'session, 'connection, 'store, 'contract, S, T>, RecordingError>
     {
+        self.start_json_run(id, task, None, store, actors)
+    }
+
+    /// Validate returned JSON while delivering explicit selected context.
+    /// Both tasks must name the same prompt.
+    pub fn start_recorded_context_json_run<
+        'session,
+        'store,
+        'contract,
+        S: RecordStore,
+        T: DeserializeOwned,
+        R: crate::context::ResourceStore,
+    >(
+        &'session mut self,
+        id: RunId,
+        task: JsonTask<'contract, T>,
+        context: super::ContextTask<'_, R>,
+        store: &'store S,
+        actors: RecordActors,
+    ) -> Result<RecordedJsonRun<'session, 'connection, 'store, 'contract, S, T>, RecordingError>
+    {
+        if context.prompt != task.prompt {
+            return Err(RecordingError::UnsupportedContext(
+                "context and result prompts differ",
+            ));
+        }
+        let prepared = crate::context::prepare_with_policy(
+            context.manifest,
+            store,
+            context.resources,
+            std::slice::from_ref(&self.session_id),
+            context.limits,
+            &context.policy,
+        )?;
+        self.start_json_run(
+            id,
+            task,
+            Some((&prepared, context.mode, context.max_prompt_bytes)),
+            store,
+            actors,
+        )
+    }
+
+    fn start_json_run<'session, 'store, 'contract, S: RecordStore, T: DeserializeOwned>(
+        &'session mut self,
+        id: RunId,
+        task: JsonTask<'contract, T>,
+        context: Option<(&crate::context::PreparedContext, super::ContextMode, usize)>,
+        store: &'store S,
+        actors: RecordActors,
+    ) -> Result<RecordedJsonRun<'session, 'connection, 'store, 'contract, S, T>, RecordingError>
+    {
         if matches!(task.mode, JsonOutputMode::RequireNativeEnforcement) {
             return Err(RecordingError::NativeStructuredOutputUnsupported);
         }
@@ -47,15 +99,49 @@ impl<'connection> AcpSession<'connection> {
         if self.connection.is_closed() {
             return Err(AcpError::Closed.into());
         }
-        let spec = self.run_spec(id)?;
+        let mut spec = self.run_spec(id)?;
         let wire = json!({"task":task.prompt,"output_instructions":task.contract.instructions(),
             "format":"Return exactly one JSON value in one assistant message. No Markdown fences or surrounding prose."}).to_string();
+        let (wire, blocks, receipt) = if let Some((context, mode, limit)) = context {
+            if context
+                .policy
+                .instruction_authorization
+                .as_ref()
+                .is_some_and(|auth| auth.grant.issuer != actors.host)
+            {
+                return Err(crate::context::ContextError::InstructionUnauthorized.into());
+            }
+            for selected in &context.records {
+                if *store.get(&selected.record.id)? != **selected {
+                    return Err(crate::records::StoreError::RevisionConflict.into());
+                }
+            }
+            spec.context = context.manifest.clone();
+            let (wire, blocks, receipt) = super::context::encode(
+                context,
+                &wire,
+                limit,
+                matches!(mode, super::ContextMode::AppendImagesToNative),
+                self.connection
+                    .info
+                    .agent_capabilities
+                    .prompt_capabilities
+                    .image,
+            )?;
+            (wire, blocks, Some(receipt))
+        } else {
+            (wire.clone(), vec![wire.into()], None)
+        };
         let mut recorder =
             super::recording::Recorder::new(store, spec.clone(), task.prompt, actors)?;
         recorder.result_evidence("result_contract", json!({"version":1,"name":task.contract.name(),"revision":task.contract.revision(),
             "mode":"validate_returned_text","native_enforcement":false,"max_validation_bytes":task.contract.max_validation_bytes(),
             "validator":"serde_deserialize","application_validation":task.contract.has_application_validation(),"wire_text":wire}))?;
-        match self.dispatch(spec, wire) {
+        if let Some(receipt) = receipt {
+            recorder.prepare_input(receipt)?;
+            recorder.input_dispatch_attempted()?;
+        }
+        match self.dispatch_blocks(spec, wire, blocks) {
             Ok(inner) => Ok(RecordedJsonRun {
                 inner: RecordedRun::new(inner, recorder),
                 contract: task.contract,

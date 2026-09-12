@@ -25,3 +25,4 @@ jobs:
       - run: bun run typecheck
         working-directory: host
       - run: bun test host/client.test.ts
+      - run: bash verification/consumer/verify.sh

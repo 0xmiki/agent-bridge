@@ -7,6 +7,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, error::Error, fmt, future::Future, pin::Pin, sync::Arc};
 #[cfg(feature = "dynamic-tools")]
 mod dynamic;
+#[cfg(feature = "dynamic-tools")]
+pub use dynamic::compile_schema;
 pub use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]

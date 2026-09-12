@@ -1,8 +1,8 @@
 # H1 acceptance
 
 Reviewed September 8, 2026. H1 is complete for the Linux hosted integration proof,
-with direct Rust usage documented and fixture-tested. This is a milestone decision,
-not a public alpha release, an independent reassessment, or a new architecture score.
+with direct Rust usage documented and fixture-tested. Public alpha release and
+independent consumer validation remain separate acceptance steps.
 
 ## Acceptance evidence
 

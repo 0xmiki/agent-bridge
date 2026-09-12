@@ -39,6 +39,17 @@ fn check_schema(schema: &Value, depth: usize, nodes: &mut usize) -> Result<(), T
     Ok(())
 }
 
+/// Compile the bounded, local-only schema subset shared by tools and hosted results.
+pub fn compile_schema(schema: &Value) -> Result<jsonschema::Validator, ToolError> {
+    if schema.to_string().len() > 65536 {
+        return Err(ToolError::InvalidSchema("schema exceeds byte limit".into()));
+    }
+    check_schema(schema, 0, &mut 0)?;
+    jsonschema::draft202012::options()
+        .build(schema)
+        .map_err(|error| ToolError::InvalidSchema(error.to_string()))
+}
+
 impl ToolRegistry {
     /// Register a runtime JSON-schema tool. Schemas compile once and arguments
     /// are validated before application dispatch. The initial subset has no refs,
@@ -68,12 +79,7 @@ impl ToolRegistry {
         if self.entries.contains_key(name) {
             return Err(ToolError::DuplicateDefinition);
         }
-        check_schema(&definition.input_schema, 0, &mut 0)?;
-        let validator = Arc::new(
-            jsonschema::draft202012::options()
-                .build(&definition.input_schema)
-                .map_err(|error| ToolError::InvalidSchema(error.to_string()))?,
-        );
+        let validator = Arc::new(compile_schema(&definition.input_schema)?);
         let handler = Arc::new(handler);
         let entry = Entry {
             definition,
