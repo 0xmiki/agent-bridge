@@ -81,7 +81,8 @@ reconstructing live authority from saved history.
 Run observers are independent of this channel. Closing `run.events` does not discard
 a question. Ending the owner invocation cancels outstanding questions and releases
 live responders. Drop-time recording is best effort; a storage timeout can leave an
-open question or a late stored answer requiring H3 reconciliation.
+open question or a late stored answer requiring application review. [Restart
+discovery](host-recovery.md) exposes saved evidence but does not revive responders.
 
 ## Bounds and deadlines
 

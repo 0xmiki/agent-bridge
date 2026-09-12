@@ -141,6 +141,10 @@ impl AcpConnection {
 }
 
 impl<'connection> RestoredSession<'connection> {
+    /// Abandon an undispatched portable selection and request provider cleanup.
+    pub async fn delete(self) -> Result<(), super::AcpError> {
+        self.session.delete().await
+    }
     /// Setup report, not evidence of input delivery. First-run receipts track that.
     pub fn report(&self) -> &Value {
         &self.report

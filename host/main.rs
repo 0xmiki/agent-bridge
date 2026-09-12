@@ -3,6 +3,7 @@ mod interactions;
 mod output;
 mod questions;
 mod receipts;
+mod recovery;
 mod storage;
 mod tool_hub;
 use agent_bridge::acp::{
@@ -62,6 +63,8 @@ struct Open {
     delete_session_on_close: bool,
     #[serde(default)]
     allow_tools: Vec<agent_bridge::ToolRef>,
+    continuation_scope: Option<String>,
+    restore: Option<recovery::Restore>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +132,34 @@ fn configuration(value: agent_bridge::SessionConfiguration) -> Value {
 fn history(request: &Request) -> Result<Value, Box<dyn std::error::Error>> {
     let store =
         SqliteStore::open_read_only(string(&request.params, "database")?, STORAGE_LOCK_WAIT)?;
+    if request.method == "discover" {
+        let after = request
+            .params
+            .get("after")
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_str().ok_or("invalid after"))
+            .transpose()?;
+        let limit = request
+            .params
+            .get("limit")
+            .map(|v| v.as_u64().ok_or("invalid limit"))
+            .transpose()?
+            .unwrap_or(100);
+        if !(1..=1000).contains(&limit) {
+            return Err("limit must be 1..=1000".into());
+        }
+        let items = match string(&request.params, "kind")? {
+            "sessions" => store.discover_sessions(after, limit as usize)?.iter().map(|id|json!({"id":id})).collect::<Vec<_>>(),
+            "runs" => store.discover_runs(after, limit as usize)?.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>()?,
+            "interactions" => store.discover_interactions(after, limit as usize)?.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>()?,
+            "continuations" => store.discover_continuations(after, limit as usize)?.iter().map(|saved|json!({"id":saved.continuation.id,"session_id":saved.continuation.session_id,"slot_id":saved.continuation.slot_id,
+                "state":match saved.state {agent_bridge::records::ContinuationState::Available=>"available",agent_bridge::records::ContinuationState::Claimed=>"claimed"},"latest":saved.latest})).collect(),
+            _ => return Err("unknown discovery kind".into()),
+        };
+        return Ok(
+            json!({"next_after":items.last().map(|item|&item["id"]),"page_full":items.len()==limit as usize,"items":items,"automatic_replay":false}),
+        );
+    }
     let session = SessionId::new(string(&request.params, "session_id")?)?;
     if request.method == "snapshot" || request.method == "changes" {
         let cursor = request
@@ -224,6 +255,9 @@ async fn session_worker(
                 .map_err(|e| e.to_string())?,
         );
         let mut launch = AcpLaunch::new(open.executable);
+        if let Some(scope) = open.continuation_scope {
+            launch = launch.continuation_scope(scope);
+        }
         for argument in open.args {
             launch = launch.arg(argument);
         }
@@ -237,21 +271,42 @@ async fn session_worker(
     };
     let (store, connection) = tokio::select! {
         _ = output.stop.cancelled() => return,
-        result = setup => match result { Ok(value)=>value, Err(error)=>{ output.error(&create_id,"setup_failed",error); return; } },
+        result = setup => match result { Ok(value)=>value, Err(error)=>{ commands.close(); output.error(&create_id,"setup_failed",error); return; } },
     };
     let result = async {
+        let prepared = open.restore.map(|restore|restore.prepare(store.as_ref(), &open.workspace)).transpose()?;
         store.create_session(SessionId::new(&session_id).unwrap()).map_err(|e| e.to_string())?;
-        let slot_id = identity("slot");
+        let slot_id = prepared.as_ref().map(|(_,_,slot)|slot.to_string()).unwrap_or_else(||identity("slot"));
         let binding = tools.bind(agent_bridge::ToolScope {session:SessionId::new(&session_id).unwrap(),slot:SlotId::new(&slot_id).unwrap()},open.allow_tools,store.clone()).await?;
         let mcp = binding.as_ref().map(|binding| vec![binding.mcp.clone()]).unwrap_or_default();
-        let mut session = tokio::select! {
+        let (mut session, restoration) = tokio::select! {
             _ = output.stop.cancelled() => return Ok::<_, String>(()),
-            result = connection.new_session(SessionId::new(&session_id).unwrap(), SlotId::new(&slot_id).unwrap(), open.workspace, mcp) => result.map_err(|e|e.to_string())?,
+            result = async {
+                if let Some((policy,resources,_)) = prepared {
+                    let restored = connection.restore(policy,store.as_ref(),&resources,mcp).await.map_err(|e|e.to_string())?;
+                    let report=receipts::view(&agent_bridge::records::Payload::Extension {namespace:"agent_bridge".into(),name:"restoration".into(),data:restored.report().clone()})["data"].clone();
+                    Ok((recovery::Session::Restored(restored),report))
+                } else {
+                    connection.new_session(SessionId::new(&session_id).unwrap(), SlotId::new(&slot_id).unwrap(), open.workspace, mcp).await
+                        .map(|s|(recovery::Session::Active(s),Value::Null)).map_err(|e|e.to_string())
+                }
+            } => result?,
         };
         let initial = session.configuration();
-        output.ok(&create_id,json!({"session_id":session_id,"slot_id":slot_id,"configuration":initial.values,"session_configuration":configuration(initial.clone()),"tool_binding_id":binding.as_ref().map(|b|&b.id)}));
+        output.ok(&create_id,json!({"session_id":session_id,"slot_id":slot_id,"configuration":initial.values,"session_configuration":configuration(initial.clone()),"tool_binding_id":binding.as_ref().map(|b|&b.id),"restoration":restoration}));
         loop {
             let request = tokio::select! { _ = output.stop.cancelled()=>break, request=commands.recv()=>match request { Some(request)=>request,None=>break } };
+            if request.method == "handoff" {
+                if open.delete_session_on_close { output.error(&request.id,"handoff_failed","cannot hand off a session configured for deletion"); continue; }
+                let handoff = session.handoff(store.as_ref());
+                drop(binding);
+                commands.close();
+                match handoff {
+                    Ok(id)=>output.ok(&request.id,json!({"continuation_id":id,"session_released":true})),
+                    Err(error)=>output.error(&request.id,"handoff_failed",error),
+                }
+                return Ok(());
+            }
             if request.method == "configuration" {
                 output.ok(&request.id, configuration(session.configuration()));
                 continue;
@@ -289,17 +344,7 @@ async fn session_worker(
                 user:ActorId::new("user").unwrap(),agent:ActorId::new("assistant").unwrap(),host:ActorId::new("host").unwrap(),
             };
             let id = RunId::new(&run_id).unwrap();
-            let started = if let Some(contract) = &contract {
-                let task = agent_bridge::acp::JsonTask {prompt, contract, mode:agent_bridge::acp::JsonOutputMode::ValidateReturnedText};
-                if let Some((manifest, resources)) = &context {
-                    session.start_recorded_context_json_run(id, task, interactions::context_task(prompt, manifest, resources), store.as_ref(), actors)
-                } else { session.start_recorded_json_run(id, task, store.as_ref(), actors) }.map(interactions::HostedRun::Json)
-            } else {
-                if let Some((manifest, resources)) = &context {
-                    session.start_recorded_context_run(id, interactions::context_task(prompt, manifest, resources), store.as_ref(), actors)
-                } else { session.start_recorded_run(id, prompt, store.as_ref(), actors) }.map(interactions::HostedRun::Plain)
-            };
-            let mut run = match started { Ok(run)=>run,Err(error)=>{if let Some(binding) = &binding { binding.end(); } output.error(&request.id,"start_failed",error);continue;} };
+            let mut run = match session.start(id,prompt,context.as_ref(),contract.as_ref(),store.as_ref(),actors) { Ok(run)=>run,Err(error)=>{if let Some(binding) = &binding { binding.end(); } output.error(&request.id,"start_failed",error);continue;} };
             output.ok(&request.id,json!({"run_id":run_id,"session_id":session_id}));
             let mut permissions: HashMap<String, (agent_bridge::acp::PermissionId, Value)> = HashMap::new();
             let mut reason = None; let mut failure = None;
@@ -309,7 +354,7 @@ async fn session_worker(
                     _ = output.stop.cancelled() => { let _=run.cancel(); break; },
                     command = commands.recv() => {
                         let Some(command)=command else { let _=run.cancel(); break; };
-                        if matches!(command.method.as_str(), "run" | "run_task" | "configuration" | "set_option" | "set_model") { output.error(&command.id,"session_busy","session already has an active run"); continue; }
+                        if matches!(command.method.as_str(), "run" | "run_task" | "configuration" | "set_option" | "set_model" | "handoff") { output.error(&command.id,"session_busy","session already has an active run"); continue; }
                         if command.params["run_id"].as_str() != Some(run_id.as_str()) { output.error(&command.id,"stale_run","run ID is not active"); continue; }
                         match command.method.as_str() {
                             "pending_permissions" => {
@@ -351,6 +396,7 @@ async fn session_worker(
             let status=if failure.is_some() { "unknown" } else { state(run.run().status()) };
             let result=if failure.is_some() && contract.is_some() { json!({"status":"unavailable"}) } else { run.result() };
             drop(run);
+            session = session.into_active().map_err(|e|e.to_string())?;
             if let Some(binding) = &binding { binding.end(); }
             if output.stop.is_cancelled() { break; }
             output.emit(json!({"event":"run_finished","stream":request.id,"session_id":session_id,"run_id":run_id,"status":status,"reason":reason,"recording_error":failure,"result":result}));
@@ -364,6 +410,7 @@ async fn session_worker(
         Ok(())
     }.await;
     if let Err(error) = result {
+        commands.close();
         output.error(&create_id, "session_setup_failed", error);
     }
     if let Err(error) = connection.shutdown().await {
@@ -549,7 +596,8 @@ fn main() {
                 output.ok(&request.id, json!({"shutdown_requested":true}));
                 break;
             }
-            "create_session" => {
+            "create_session" | "restore_session" => {
+                sessions.retain(|_, sender| !sender.is_closed());
                 if sessions.len() >= MAX_SESSIONS {
                     output.error(&request.id, "session_limit", "host session limit reached");
                     continue;
@@ -561,7 +609,23 @@ fn main() {
                         continue;
                     }
                 };
-                let id = identity("session");
+                if (request.method == "restore_session") != open.restore.is_some() {
+                    output.error(&request.id,"invalid_params","restore_session requires an explicit restoration strategy; create_session does not accept one");
+                    continue;
+                }
+                let id = open
+                    .restore
+                    .as_ref()
+                    .map(|restore| restore.session_id().to_string())
+                    .unwrap_or_else(|| identity("session"));
+                if sessions.get(&id).is_some_and(|sender| !sender.is_closed()) {
+                    output.error(
+                        &request.id,
+                        "session_busy",
+                        "session already owned by this host",
+                    );
+                    continue;
+                }
                 if let Err(error) = tools.validate(&open.allow_tools) {
                     output.error(&request.id, "invalid_tool_grant", error);
                     continue;
@@ -590,7 +654,7 @@ fn main() {
                     ));
                 }));
             }
-            "history" | "snapshot" | "changes" => {
+            "history" | "snapshot" | "changes" | "discover" => {
                 if reads.load(Ordering::SeqCst) >= 4 {
                     output.error(
                         &request.id,
@@ -632,6 +696,7 @@ fn main() {
             | "pending_permissions"
             | "configuration"
             | "set_option"
+            | "handoff"
             | "set_model" => {
                 let id = match string(&request.params, "session_id") {
                     Ok(id) => id,

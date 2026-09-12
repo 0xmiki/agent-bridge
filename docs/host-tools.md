@@ -81,7 +81,8 @@ on that binding. Further runs using it fail with `tool_binding_retired`; a fresh
 session/binding is required after the application decides how to proceed. The bridge
 does not replay the uncertain call. This prevents a provider retry from reusing the
 same endpoint after an unknown outcome. A fresh session is not proof that repeating
-an external side effect is safe; domain idempotency and H3 reconciliation remain needed.
+an external side effect is safe. The application owns idempotency and reconciliation;
+[restart discovery](host-recovery.md) exposes saved uncertainty without replaying it.
 
 An ordinary returned handler error is still a returned result, not a rollback claim.
 A normal agent completion likewise does not establish tool success. Inspect invocation

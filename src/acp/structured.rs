@@ -141,6 +141,7 @@ impl<'connection> AcpSession<'connection> {
             recorder.prepare_input(receipt)?;
             recorder.input_dispatch_attempted()?;
         }
+        recorder.execution_evidence("dispatch_attempted")?;
         match self.dispatch_blocks(spec, wire, blocks) {
             Ok(inner) => Ok(RecordedJsonRun {
                 inner: RecordedRun::new(inner, recorder),

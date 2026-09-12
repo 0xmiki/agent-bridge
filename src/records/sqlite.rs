@@ -2,7 +2,9 @@ mod changes;
 mod codec;
 mod continuation;
 mod execution;
+mod recovery;
 mod resources;
+pub use recovery::{InteractionRecovery, RunRecovery};
 
 use super::*;
 use crate::{ContextManifest, InvalidId, SlotId};

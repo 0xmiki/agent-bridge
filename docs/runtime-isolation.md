@@ -55,6 +55,7 @@ databases, stream routing, state restoration, and process ownership.
 This is not a hard real-time guarantee. Kernel-level uninterruptible I/O, a stalled
 allocator, whole-process scheduling failure, and platform-specific process termination
 are not simulated. Standard threads cannot safely be force-killed individually.
-OS failure testing remains release work; durable recovery remains H3. Independent
+OS failure testing remains release work. [H3](host-recovery.md) verifies local
+process-restart discovery and explicit restoration, not power-loss recovery. Independent
 [Bun run observers](subscriptions.md) now have separate bounded queues. Shared
 transport failures and provider-output scheduling fairness remain separate concerns.

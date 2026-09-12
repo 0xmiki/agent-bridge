@@ -100,8 +100,8 @@ capability declaration alone is not compatibility evidence. See
 
 Application tools now have a [hosted workflow](host-tools.md), including
 [structured questions](host-questions.md) inside live tool invocations. Selected
-context and validated results have Rust building blocks and remain H2 host work.
-Native resume and
-portable restoration exist in Rust, while hosted restart reconciliation is H3.
+context and validated results use the [same hosted integration](host-context-results.md).
+[Restart discovery and explicit restoration](host-recovery.md) expose saved uncertainty,
+native handoff/resume, and portable text selection. Effects are never replayed automatically.
 Review the [error and ownership contract](errors-and-ownership.md) before implementing
 retry, cancellation, or application shutdown behavior.

@@ -8,7 +8,7 @@ use agent_bridge::{ActorId, RecordId, ToolGrant, ToolRef, ToolScope};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -32,6 +32,7 @@ pub struct Hub {
     registry: Arc<ToolRegistry>,
     broker: Arc<Broker>,
     definitions: Vec<Definition>,
+    used_scopes: Mutex<HashSet<(String, String)>>,
 }
 struct Broker {
     output: Output,
@@ -160,6 +161,7 @@ impl Hub {
             registry: Arc::new(registry),
             broker,
             definitions,
+            used_scopes: Mutex::new(HashSet::new()),
         })
     }
     pub fn validate(&self, tools: &[ToolRef]) -> Result<(), String> {
@@ -186,6 +188,16 @@ impl Hub {
         self.validate(&tools)?;
         if tools.is_empty() {
             return Ok(None);
+        }
+        {
+            let mut used = self.used_scopes.lock().unwrap();
+            // ponytail: retain at most 128 scope tombstones per host. A fresh host
+            // is required for reuse so delayed callbacks cannot gain new grants.
+            if used.len() >= 128
+                || !used.insert((scope.session.to_string(), scope.slot.to_string()))
+            {
+                return Err("tool scope already used or host scope limit reached; restart the host before granting tools to a native continuation".into());
+            }
         }
         #[cfg(not(unix))]
         {

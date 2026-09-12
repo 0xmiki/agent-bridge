@@ -54,8 +54,8 @@ token. The host still rejects invalid, duplicate, or stale responses.
 
 The snapshot is read-only and does not repeat prompts, resolve requests, or recreate
 permissions from history. A terminal or superseded run has no pending requests.
-This supports reattaching within the current host; post-crash interaction recovery
-remains H3.
+This supports reattaching within the current host. After a crash, use [restart
+discovery](host-recovery.md) to inspect saved evidence, not to recreate live responders.
 
 ## Scope
 

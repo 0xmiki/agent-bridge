@@ -55,6 +55,126 @@ fn ready(store: &SqliteStore) {
     store.create_session(SessionId::new("s").unwrap()).unwrap();
     store.register_run(spec("r")).unwrap();
 }
+
+#[test]
+fn restart_inventory_is_paginated_read_only_and_conservative() {
+    let database = Database::new();
+    let store = database.open();
+    ready(&store);
+    store
+        .create_session(SessionId::new("empty").unwrap())
+        .unwrap();
+    store.register_run(spec("z")).unwrap();
+    let evidence = |id: &str, name: &str, data: serde_json::Value| {
+        draft(
+            id,
+            Payload::Extension {
+                namespace: "agent_bridge".into(),
+                name: name.into(),
+                data,
+            },
+            RecordState::Complete,
+        )
+    };
+    store
+        .insert(evidence(
+            "prepared",
+            "run_dispatch",
+            json!({"version":1,"state":"prepared"}),
+        ))
+        .unwrap();
+    let runs = store.discover_runs(None, 1).unwrap();
+    assert_eq!(runs[0].dispatch, "not_dispatched");
+    assert!(runs[0].issues.contains(&"completion_unknown"));
+    store
+        .insert(evidence(
+            "attempt",
+            "run_dispatch",
+            json!({"version":1,"state":"dispatch_attempted"}),
+        ))
+        .unwrap();
+    store
+        .insert(evidence(
+            "contract",
+            "result_contract",
+            json!({"version":1}),
+        ))
+        .unwrap();
+    store
+        .insert(draft(
+            "finished",
+            Payload::RunFinished {
+                reason: CompletionReason::Completed,
+            },
+            RecordState::Complete,
+        ))
+        .unwrap();
+    store.insert(permission()).unwrap();
+    let mut tool = evidence(
+        "tool-attempt",
+        "tool_invocation",
+        json!({"version":1,"invocation_id":"call","state":"dispatch_attempted"}),
+    );
+    tool.run_id = None;
+    store.insert(tool).unwrap();
+    drop(store);
+    let reopened = SqliteStore::open_read_only(database.path(), std::time::Duration::ZERO).unwrap();
+    assert_eq!(
+        reopened.discover_sessions(None, 1).unwrap()[0].as_str(),
+        "empty"
+    );
+    assert_eq!(
+        reopened.discover_sessions(Some("empty"), 1).unwrap()[0].as_str(),
+        "s"
+    );
+    assert!(reopened.discover_sessions(Some("s"), 1).unwrap().is_empty());
+    let run = reopened.discover_runs(None, 1).unwrap().remove(0);
+    assert_eq!(run.dispatch, "attempted");
+    assert_eq!(run.completion, Some(CompletionReason::Completed));
+    assert!(run.issues.contains(&"validation_missing"));
+    assert!(run.issues.contains(&"open_records"));
+    assert_eq!(
+        reopened.discover_runs(Some("r"), 1).unwrap()[0].dispatch,
+        "missing_evidence"
+    );
+    let interactions = reopened.discover_interactions(None, 1).unwrap();
+    assert_eq!(interactions[0].kind, "permission_without_decision");
+    let interactions = reopened
+        .discover_interactions(Some(interactions[0].id.as_str()), 1)
+        .unwrap();
+    assert_eq!(interactions[0].kind, "application_tool_outcome_unknown");
+    assert!(interactions[0].run_id.is_none());
+    assert!(reopened.discover_runs(None, 0).is_err());
+    assert!(reopened.discover_interactions(None, 1001).is_err());
+    let store = database.open();
+    let mut future = evidence(
+        "tool-future",
+        "tool_invocation",
+        json!({"version":9,"invocation_id":"call","state":"returned"}),
+    );
+    future.run_id = None;
+    store.insert(future).unwrap();
+    assert_eq!(reopened.discover_interactions(None, 100).unwrap().len(), 2);
+    let mut returned = evidence(
+        "tool-returned",
+        "tool_invocation",
+        json!({"version":1,"invocation_id":"call","state":"returned","outcome":{"kind":"success","value":null}}),
+    );
+    returned.run_id = None;
+    store.insert(returned).unwrap();
+    assert_eq!(reopened.discover_interactions(None, 100).unwrap().len(), 1);
+    store
+        .insert(evidence(
+            "future-dispatch",
+            "run_dispatch",
+            json!({"version":9,"state":"prepared"}),
+        ))
+        .unwrap();
+    assert!(matches!(
+        reopened.discover_runs(None, 100),
+        Err(StoreError::CorruptData(_))
+    ));
+}
 fn message(text: &str) -> Payload {
     Payload::Message {
         kind: MessageKind::Agent,

@@ -113,7 +113,12 @@ Recording failures cannot expose a valid result. This completes H2 within that s
 - Expose explicit recovery choices; verify native resume separately from a fresh run
   with selected portable context.
 
-Saved-history reads do not establish durable execution. These host tests remain open.
+The [host restart contract](host-recovery.md) now passes Linux SIGKILL/reopen tests,
+dispatch-intent write failures, single-use native handoff/resume, and exact one-time
+portable selection delivery. Discovery runs without previous in-memory IDs and
+without provider dispatch. The packaged consumer exercises discovery and native
+resume. This completes H3's local process-restart scope, not power-loss durability,
+cross-process exclusion, automatic reconciliation, or universal native compatibility.
 
 ## 6. Consumer and release
 

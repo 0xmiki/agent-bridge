@@ -797,7 +797,20 @@ async fn child_runs_require_fresh_sessions_and_persist_lineage_before_dispatch()
         while recorded_next(&mut run).await.is_some() {}
     }
     let parent_spec = store.get_run(&RunId::new("parent").unwrap()).unwrap();
-    let selected = store.list(&parent_spec.session_id, None, 100).unwrap()[0]
+    let selected = store
+        .list(&parent_spec.session_id, None, 100)
+        .unwrap()
+        .into_iter()
+        .find(|r| {
+            matches!(
+                r.record.payload,
+                Payload::Message {
+                    kind: MessageKind::User,
+                    ..
+                }
+            )
+        })
+        .unwrap()
         .record
         .id
         .clone();
@@ -2222,7 +2235,7 @@ fn input_receipts(store: &impl RecordStore) -> Vec<serde_json::Value> {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn receipt_write_failures_prevent_dispatch_without_reusing_the_run() {
-    for blocked_sequence in [1, 2] {
+    for blocked_sequence in [2, 3] {
         let files = TestFiles::new();
         let database = files.path("receipt-failure.sqlite3");
         let log = files.path("messages");
@@ -2265,7 +2278,7 @@ async fn receipt_write_failures_prevent_dispatch_without_reusing_the_run() {
                 .contains("session/prompt")
         );
         let receipts = input_receipts(&store);
-        assert_eq!(receipts.len(), if blocked_sequence == 1 { 0 } else { 1 });
+        assert_eq!(receipts.len(), if blocked_sequence == 2 { 0 } else { 1 });
     }
 }
 
@@ -2603,7 +2616,7 @@ async fn recorded_text_has_stable_identity_without_a_write_per_delta() {
     let history = store
         .list(&SessionId::new("app-session").unwrap(), None, 100)
         .unwrap();
-    assert_eq!(history.len(), 3); // user, agent, stop reason
+    assert_eq!(history.len(), 5); // preparation, user, dispatch, agent, stop reason
     assert!(history.iter().all(|record| record.state.is_final()));
     let run = store.get_run(&RunId::new("recorded").unwrap()).unwrap();
     assert_eq!(run.slot_id.as_str(), "fixture-slot");

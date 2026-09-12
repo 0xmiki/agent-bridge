@@ -1,6 +1,7 @@
 /** Experimental v1 client. No ACP SDK objects cross this boundary. */
 import { spawn } from "bun";
-import type { ReceiptView, Rejection } from "./receipts";
+import type { ReceiptView, Rejection, Restoration as RestorationReport } from "./receipts";
+export type {Restoration as RestorationReport} from "./receipts";
 import type { ConfigurationValue } from "./receipts";
 export type { ConfigurationValue } from "./receipts";
 export interface ConfigurationOption {
@@ -19,11 +20,19 @@ import {QuestionClient, type QuestionHandle} from "./questions";
 export type {QuestionDefinition,AnswerOutcome,QuestionHandle} from "./questions";
 export { defineTool } from "./tools";
 
-export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean; allowTools?:readonly ToolReference[] }
+export interface SessionOptions { database: string; workspace: string; executable: string; args?: string[]; env?: Record<string, string>; delete_session_on_close?: boolean; allowTools?:readonly ToolReference[]; continuation_scope?:string }
+export type Restoration = {strategy:"native";session_id:string;continuation:string} | {strategy:"portable";session_id:string;context:NonNullable<RunOptions["context"]>};
 export interface StoredRecord { id: string; session_id: string; run_id: string | null; actor: string; sequence: string; revision: string; state: "open" | "complete" | "interrupted"; payload: { type: string; data: unknown }; receipt?: ReceiptView | null; reply_to_id?:string|null;source?:{namespace:string;id:string}|null }
 export interface HistoryPage { records: StoredRecord[]; next_after: string | null; page_full: boolean }
 export interface ChangeCursor { epoch: string; session_id: string; position: string }
 export interface StatePage extends HistoryPage { cursor: ChangeCursor }
+export interface DiscoveryItems {
+  sessions: {id:string};
+  runs: {id:string;session_id:string;slot_id:string;dispatch:"missing_evidence"|"not_dispatched"|"attempted";completion:{type:"completed"|"cancelled"|"refused"|"token_limit"|"step_limit"}|{type:"other";data:string}|null;issues:string[]};
+  interactions: {id:string;session_id:string;run_id:string|null;kind:string;state:StoredRecord["state"];source:StoredRecord["source"]};
+  continuations: {id:string;session_id:string;slot_id:string;state:"available"|"claimed";latest:boolean};
+}
+export interface DiscoveryPage<T> {items:T[];next_after:string|null;page_full:boolean;automatic_replay:false}
 export interface RunOptions {
   context?: {mode:"append_to_native"; records?:string[]; resources?:{id:string;revision:string;media_type:"text/plain"|"text/markdown";text:string}[]};
   result?: {name:string;revision:string;schema:unknown;max_validation_bytes:number;mode:"validate_returned_text"};
@@ -139,11 +148,15 @@ export class HostRun {
 }
 
 export class HostSession {
-  constructor(private host: BridgeHost, readonly id: string, readonly slotId: string, readonly database: string, readonly initialConfiguration?: SessionConfiguration) {}
-  configuration(): Promise<SessionConfiguration> { return this.host.request("configuration", {session_id:this.id}); }
-  setOption(optionId: string, value: ConfigurationValue): Promise<SessionConfiguration> { return this.host.request("set_option", {session_id:this.id, option_id:optionId, value}); }
-  setModel(model: string): Promise<SessionConfiguration> { return this.host.request("set_model", {session_id:this.id, model}); }
-  run(prompt: string, options?: RunOptions) { return this.host.startRun(this.id, prompt, options); }
+  private released=false;
+  private requireActive() {if(this.released)throw new Error("session handle was released for handoff");}
+  constructor(private host: BridgeHost, readonly id: string, readonly slotId: string, readonly database: string, readonly initialConfiguration?: SessionConfiguration, readonly restoration:RestorationReport|null=null) {}
+  /** Consumes this host session even on an uncertain handoff failure. */
+  handoff():Promise<{continuation_id:string;session_released:true}> {this.requireActive();this.released=true;return this.host.request("handoff",{session_id:this.id});}
+  configuration(): Promise<SessionConfiguration> { this.requireActive();return this.host.request("configuration", {session_id:this.id}); }
+  setOption(optionId: string, value: ConfigurationValue): Promise<SessionConfiguration> { this.requireActive();return this.host.request("set_option", {session_id:this.id, option_id:optionId, value}); }
+  setModel(model: string): Promise<SessionConfiguration> { this.requireActive();return this.host.request("set_model", {session_id:this.id, model}); }
+  run(prompt: string, options?: RunOptions) { this.requireActive();return this.host.startRun(this.id, prompt, options); }
   history(after?: string, limit = 1000) { return this.host.history(this.database, this.id, after, limit); }
   snapshot(cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.host.snapshot(this.database, this.id, cursor, after, limit); }
   changes(cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.host.changes(this.database, this.id, cursor, limit); }
@@ -220,12 +233,16 @@ export class BridgeHost {
   /** Low-level versioned command access for contract tests. */
   request(method: string, params: unknown = {}) { return this.send(method, params, `request-${++this.nextId}`); }
   async createSession(options: SessionOptions) {
+    return this.openSession(options);
+  }
+  async restoreSession(options:SessionOptions, restore:Restoration) { return this.openSession(options,restore); }
+  private async openSession(options:SessionOptions, restore?:Restoration) {
     await this.configured;
     const {allowTools = [], ...launch} = options;
     const allow = allowTools.map(({name,revision})=>({name,revision}));
-    const result = await this.request("create_session", {...launch,allow_tools:allow});
+    const result = await this.request(restore ? "restore_session" : "create_session", {...launch,allow_tools:allow,restore});
     this.tools.bind(result.tool_binding_id,result.session_id,result.slot_id,allow);
-    return new HostSession(this, result.session_id, result.slot_id, options.database, result.session_configuration);
+    return new HostSession(this, result.session_id, result.slot_id, options.database, result.session_configuration, result.restoration);
   }
   startRun(sessionId: string, prompt: string, options?: RunOptions) {
     const id = `request-${++this.nextId}`;
@@ -235,6 +252,8 @@ export class BridgeHost {
     return run;
   }
   history(database: string, sessionId: string, after?: string, limit = 1000): Promise<HistoryPage> { return this.request("history", { database, session_id: sessionId, after, limit }); }
+  /** Read-only restart inventory; stop previous writers before scanning all pages. */
+  discover<K extends keyof DiscoveryItems>(database:string, kind:K, after?:string, limit=100):Promise<DiscoveryPage<DiscoveryItems[K]>> { return this.request("discover",{database,kind,after,limit}); }
   snapshot(database: string, sessionId: string, cursor?: ChangeCursor, after?: string, limit = 100): Promise<StatePage> { return this.request("snapshot", { database, session_id: sessionId, cursor, after, limit }); }
   changes(database: string, sessionId: string, cursor: ChangeCursor, limit = 100): Promise<StatePage> { return this.request("changes", { database, session_id: sessionId, cursor, limit }); }
   async pendingQuestions(sessionId?:string) {await this.configured;return this.questions.pending(sessionId);}

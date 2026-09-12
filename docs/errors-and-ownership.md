@@ -95,7 +95,8 @@ and cursor together. `SessionState` does this for the Bun client. See
 Typed [receipt readers](receipt-readers.md) distinguish prepared, attempted, observed,
 unknown, valid, rejected, and unsupported evidence. Missing receipts do not establish
 success. Reading a receipt does not replay context, reconstruct a validator, or grant
-tool authority. Hosted crash reconciliation and explicit recovery choices remain H3.
+tool authority. [Hosted restart discovery and restoration](host-recovery.md) expose
+explicit recovery choices. External effect reconciliation remains application-owned.
 
 ## Compatibility boundaries
 

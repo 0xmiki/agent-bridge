@@ -74,19 +74,25 @@ and questions; live OpenCode and Codex checks preserve exact reopened receipts.
 Standalone hosted questions remain an extension to consider when an acceptance
 scenario needs them. This completes H2's Linux text-context and host-validation scope,
 not native schema enforcement, media/instruction delivery, or post-crash recovery.
-Next: H3 unfinished-work discovery and explicit uncertainty accounting.
+H3 below adds unfinished-work discovery and explicit uncertainty accounting.
 
-## H3 — Local restart contract (planned)
+## H3 — Local restart contract (complete within documented scope)
 
 Outcome: discover and explain unfinished work after a crash. Acceptance: quality gate 5.
 
-- [ ] Enumerate unresolved runs/interactions without in-memory IDs.
-- [ ] Persist dispatch intent/outcomes and expose explicit recovery choices.
-- [ ] Kill/reopen tests at dispatch, tool, decision, and completion boundaries.
-- [ ] Host APIs for verified native resume and explicit portable restoration.
-- [ ] Never automatically replay effects with uncertain outcomes.
+- [x] Enumerate saved sessions, runs, unresolved interactions, and continuations without in-memory IDs.
+- [x] Persist run/permission dispatch intent; retain completion, validation, tool, and decision outcomes with explicit uncertainty.
+- [x] Linux SIGKILL/reopen tests at dispatch, tool/question, decision, and completion boundaries.
+- [x] Host APIs for single-use native handoff/resume and explicit portable restoration; fixture and packaged-consumer checks.
+- [x] Discovery and restoration never automatically replay uncertain prompts, tools, or decisions.
 
-Reading saved history alone does not establish durable execution.
+The [restart contract](docs/host-recovery.md) records the API, evidence, and limits.
+Discovery is read-only and requires callers to stop previous writers before scanning.
+Native resume requires an available, explicitly saved handoff; it does not make an
+interrupted run resumable. Portable restoration starts a fresh native session with
+a frozen text selection. No automatic claim release, effect reconciliation, power-loss
+guarantee, or cross-process exclusion is claimed. Hosted H3 uses deterministic
+providers; it adds no new live-provider compatibility claim. Next: H4 release checks.
 
 ## H4 — Public ACP alpha (planned)
 

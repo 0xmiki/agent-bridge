@@ -135,6 +135,7 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
             input_version: 1,
             input_response: false,
         };
+        this.execution_evidence("prepared")?;
         this.insert(
             Payload::Message {
                 kind: MessageKind::User,
@@ -216,6 +217,21 @@ impl<'store, S: RecordStore> Recorder<'store, S> {
         self.input_evidence(
             serde_json::json!({"version":self.input_version,"state":"dispatch_attempted"}),
         )
+    }
+
+    pub(super) fn execution_evidence(&mut self, state: &str) -> Result<(), RecordingError> {
+        self.insert(
+            Payload::Extension {
+                namespace: "agent_bridge".into(),
+                name: "run_dispatch".into(),
+                data: serde_json::json!({"version":1,"state":state}),
+            },
+            self.actors.host.clone(),
+            None,
+            None,
+            RecordState::Complete,
+        )?;
+        Ok(())
     }
 
     fn draft(
@@ -708,6 +724,28 @@ impl<'session, 'connection, 'store, S: RecordStore> RecordedRun<'session, 'conne
         if self.failed {
             return Err(RecordingError::Closed);
         }
+        if !self.inner.permission_pending(&id) {
+            return Err(AcpError::InvalidPermission.into());
+        }
+        let index = *self
+            .recorder
+            .permissions
+            .get(&id)
+            .ok_or(RecordingError::MissingPermission)?;
+        let request = &self.recorder.records[index].stored;
+        let Payload::Permission { options, .. } = &request.record.payload else {
+            unreachable!()
+        };
+        if option.is_some_and(|option| !options.iter().any(|offered| offered.id == option)) {
+            return Err(AcpError::InvalidPermission.into());
+        }
+        self.recorder.insert(
+            Payload::Extension {
+                namespace: "agent_bridge".into(), name: "permission_dispatch".into(),
+                data: serde_json::json!({"version":1,"state":"dispatch_attempted","option_id":option}),
+            },
+            self.recorder.actors.host.clone(), Some(request.record.id.clone()), None, RecordState::Complete,
+        )?;
         self.inner.respond(id, option).map_err(Into::into)
     }
     pub fn cancel(&mut self) -> Result<(), RecordingError> {

@@ -43,8 +43,9 @@ const host = new BridgeHost(resolve(binary), { tools: [lookup], onQuestion: asyn
 } });
 let sessionId = "";
 let records: StoredRecord[] = [];
+let continuation="";let continuedSession="";
 try {
-  const configured = await host.createSession({ database, workspace: process.cwd(), executable: resolve(configFixture), args: ["config"] });
+  const configured = await host.createSession({ database, workspace: process.cwd(), executable: resolve(configFixture), args: ["config"],continuation_scope:"consumer" });
   assert.equal(configured.initialConfiguration?.options?.find(option => option.category === "model")?.choices.length, 2);
   for (const model of ["model-a", "model-b"]) {
     const config = await configured.setModel(model);
@@ -54,6 +55,7 @@ try {
     for await (const _ of turn.events) { /* Drain the public stream. */ }
     assert.equal((await turn.completed).status, "completed");
   }
+  continuedSession=configured.id;continuation=(await configured.handoff()).continuation_id;
   const session = await host.createSession({ database, workspace: process.cwd(), executable: process.execPath,
     args: [resolve(fixture)], allowTools: [lookup] });
   sessionId = session.id;
@@ -94,5 +96,12 @@ try {
   await state.sync(reopened);
   assert.equal(state.items.length, records.length);
   assert.ok(state.items.some(item => item.kind === "message" && item.role === "agent" && item.text.includes(token)));
+  assert.ok((await reopened.discover(database,"sessions")).items.some(item=>item.id===sessionId));
+  assert.ok((await reopened.discover(database,"runs")).items.every(item=>item.dispatch==="attempted"));
+  assert.ok((await reopened.discover(database,"continuations")).items.some(item=>item.id===continuation && item.state==="available"));
+  const resumed=await reopened.restoreSession({database,workspace:process.cwd(),executable:resolve(configFixture),args:["chat"],continuation_scope:"consumer"},
+    {strategy:"native",session_id:continuedSession,continuation});
+  const turn=resumed.run("Continue explicitly");for await(const _ of turn.events){}
+  assert.equal((await turn.completed).status,"completed");
 } finally { await reopened.close(); }
-console.log("Packaged consumer passed: configuration, context, validated result, tool, question, cancellation, reopened state");
+console.log("Packaged consumer passed: configuration, context, validated result, tool, question, cancellation, restart discovery, native resume");

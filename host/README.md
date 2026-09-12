@@ -158,8 +158,10 @@ does not reconnect a native session or recover uncertain work. Tool handlers can
 `ctx.ask(definition)` and applications can render forms through `onQuestion` or
 `pendingQuestions()`. See [hosted questions](../docs/host-questions.md) and
 `questions-example.ts`. Enabling questions sets the default tool deadline to 120
-seconds, including time spent awaiting answers. Context policies, restoration, and
-child execution currently have Rust APIs but are not exposed by this host.
+seconds, including time spent awaiting answers. [Restart discovery and explicit
+restoration](../docs/host-recovery.md) expose saved uncertainty, native handoffs,
+and portable text selections without automatic replay. Instruction context policies
+and child execution still require the Rust APIs.
 Session diagnostics and typed state projections
 also need a fuller client contract.
 

@@ -371,6 +371,7 @@ impl<'connection> AcpSession<'connection> {
         store.link_execution(relation)?;
         recorder.prepare_input(receipt)?;
         recorder.input_dispatch_attempted()?;
+        recorder.execution_evidence("dispatch_attempted")?;
         match self.dispatch_blocks(spec, wire, blocks) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
             Err(error) => {
@@ -475,6 +476,7 @@ impl<'connection> AcpSession<'connection> {
             recorder.restoration(report)?;
         }
         recorder.input_dispatch_attempted()?;
+        recorder.execution_evidence("dispatch_attempted")?;
         match self.dispatch_blocks(spec, wire, blocks) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
             Err(error) => {
@@ -518,6 +520,7 @@ impl<'connection> AcpSession<'connection> {
         if let Some(report) = report {
             recorder.restoration(report)?;
         }
+        recorder.execution_evidence("dispatch_attempted")?;
         match self.dispatch(spec, text) {
             Ok(run) => Ok(super::RecordedRun::new(run, recorder)),
             Err(error) => {

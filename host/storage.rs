@@ -188,6 +188,28 @@ impl<S> Drop for Worker<S> {
 pub struct Store<S = SqliteStore> {
     worker: Worker<S>,
 }
+impl agent_bridge::records::ContinuationStore for Store {
+    fn save_continuation(
+        &self,
+        value: agent_bridge::records::Continuation,
+    ) -> Result<Arc<agent_bridge::records::ContinuationRecord>, StoreError> {
+        self.worker.call(move |s| s.save_continuation(value))
+    }
+    fn get_continuation(
+        &self,
+        id: &agent_bridge::ContinuationId,
+    ) -> Result<Arc<agent_bridge::records::ContinuationRecord>, StoreError> {
+        let id = id.clone();
+        self.worker.call(move |s| s.get_continuation(&id))
+    }
+    fn claim_continuation(
+        &self,
+        id: &agent_bridge::ContinuationId,
+    ) -> Result<Arc<agent_bridge::records::ContinuationRecord>, StoreError> {
+        let id = id.clone();
+        self.worker.call(move |s| s.claim_continuation(&id))
+    }
+}
 impl Store {
     pub fn open(path: PathBuf, budget: &Budget) -> Result<Self, StoreError> {
         let gate = budget.writer_gate(&path)?;

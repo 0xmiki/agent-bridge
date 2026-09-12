@@ -297,3 +297,36 @@ successful check; provider cleanup and exact reopened-history assertions passed.
 H2 is complete for the [documented text-context and validation scope](../docs/host-context-results.md).
 Native result enforcement, hosted media/instruction grants, standalone questions,
 Claude authentication, non-Linux lifecycle, and H3 crash recovery are not established.
+
+## H3 local restart contract, September 12
+
+H3 adds read-only session/run/interaction/continuation discovery, recorded run and
+permission dispatch intent, native handoff/resume, and portable text restoration.
+It reuses the existing records, continuation claims, context preparation, and
+restoration reports. No database migration or runtime dependency was added.
+
+193 Rust tests and 56 Bun host tests pass. Clippy, rustfmt, TypeScript checking,
+standalone core/receipts/SQLite feature checks, and the packaged consumer also pass.
+The consumer discovers saved state and explicitly resumes a single-use native handoff
+through installed package imports.
+
+New host tests send SIGKILL at dispatch, pending permission, sent permission decision,
+application tool execution, tool-scoped question, unrecorded provider completion, and
+recorded completion. SQLite holds a write lock for the unrecorded-completion case.
+Reopened hosts discover uncertain evidence without remembered IDs or replacement
+provider dispatch. Test-provider processes and helpers exit after each case.
+Failed run/decision intent writes prevent sending; a failed decision write leaves
+its live permission pending.
+
+Separate fixture checks verify provider/scope preflight, single-use native claims,
+consumed claims after resume failure, no fallback, stale client handles, one-time
+portable context delivery, precision-safe setup reports, and provider cleanup before
+the first portable run. A release-ordering bug found by the new tests was fixed:
+setup failures and handoffs close their command queue before responding. Tool scopes
+cannot be rebound within one host, preventing delayed callbacks from acquiring
+replacement grants.
+
+This completes H3 within the [documented local restart scope](../docs/host-recovery.md).
+There was no new authenticated provider run for H3. Power loss, OS variants,
+cross-process exclusion, automatic effect reconciliation, and recovery of an uncertain
+native continuation claim remain outside the contract. H4 release work remains open.

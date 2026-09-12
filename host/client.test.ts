@@ -58,6 +58,188 @@ function messageText(record: StoredRecord) {
 const countResult: NonNullable<RunOptions["result"]> = {name:"count",revision:"v1",mode:"validate_returned_text",max_validation_bytes:4096,
   schema:{type:"object",properties:{count:{type:"integer",minimum:1}},required:["count"],additionalProperties:false}};
 
+async function killHost(host:BridgeHost) {
+  const child = (host as unknown as {process:{kill(signal:string):void;exited:Promise<number>}}).process;
+  child.kill("SIGKILL"); await within(child.exited);
+}
+
+test("restart discovery survives SIGKILL at dispatch, permission, decision, and completion",async()=>{
+  for(const boundary of ["dispatch","permission","decision","completion","recorded-completion"]){
+    const host=new BridgeHost(binary);
+    const gate=join(directory,`crash-${boundary}.gate`);const pid=join(directory,`crash-${boundary}.pid`);
+    const sent=join(directory,`crash-${boundary}.sent`);
+    const messages=join(directory,`crash-${boundary}.messages`);
+    const config=options(`crash-${boundary}`,boundary==="dispatch" ? "cancel":boundary.includes("permission") || boundary==="decision" ? "permission":"chat",
+      {BRIDGE_TEST_PID:pid,BRIDGE_TEST_MESSAGES:messages,...(boundary==="decision" ? {BRIDGE_TEST_DECISION_GATE:gate}:{}),...(boundary==="completion" ? {BRIDGE_TEST_COMPLETION_GATE:gate,BRIDGE_TEST_COMPLETION_SENT:sent}:{})});
+    let sql:Database|undefined;
+    try {
+      const session=await host.createSession(config);const run=session.run("crash boundary");await run.started;
+      if(boundary==="permission" || boundary==="decision"){
+        for await(const event of run.events){if(event.event==="permission"){
+          if(boundary==="decision"){await run.respond(event.permission_id,"allow");await until(()=>existsSync(gate+".ready"));}
+          break;
+        }}
+      }else if(boundary==="completion"){
+        await until(()=>existsSync(gate+".ready"));
+        sql=new Database(config.database);sql.exec("PRAGMA busy_timeout=1000");sql.exec("BEGIN IMMEDIATE");
+        writeFileSync(gate+".go","go");await until(()=>existsSync(sent));
+      }else if(boundary==="recorded-completion") {await text(run);expect((await run.completed).status).toBe("completed");}
+      await killHost(host);
+      sql?.close();sql=undefined;
+      writeFileSync(gate+".go","go");
+      const before=readFileSync(messages,"utf8");
+      const reopened=new BridgeHost(binary,{questions:true});
+      try {
+        // Deliberately discover from the database, without session/run IDs.
+        const sessions=await reopened.discover(config.database,"sessions");expect(sessions.items).toHaveLength(1);
+        const runs=await reopened.discover(config.database,"runs");expect(runs.items).toHaveLength(1);
+        expect(runs.automatic_replay).toBe(false);expect(runs.items[0]!.dispatch).toBe("attempted");
+        if(boundary==="recorded-completion") {expect(runs.items[0]!.completion).toEqual({type:"completed"});expect(runs.items[0]!.issues).toEqual([]);}
+        else {expect(runs.items[0]!.completion).toBeNull();expect(runs.items[0]!.issues).toContain("completion_unknown");}
+        const interactions=await reopened.discover(config.database,"interactions");
+        if(boundary==="permission")expect(interactions.items.some(i=>i.kind==="permission_without_decision")).toBe(true);
+        if(boundary==="decision"){
+          expect(interactions.items.some(i=>i.kind.startsWith("permission_"))).toBe(true);
+          const history=await reopened.history(config.database,sessions.items[0]!.id);
+          expect(history.records.some(r=>r.payload.type==="extension" && (r.payload.data as any).name==="permission_dispatch")).toBe(true);
+        }
+        expect(await reopened.pendingQuestions()).toEqual([]);
+        expect(readFileSync(messages,"utf8")).toBe(before);
+        await expect(reopened.discover(config.database,"runs",undefined,0)).rejects.toHaveProperty("code","history_failed");
+      }finally{await reopened.close();}
+    }finally{
+      sql?.close();
+      writeFileSync(gate+".go","go");await host.close().catch(()=>{});
+      if(existsSync(pid))await until(()=>stopped(Number(readFileSync(pid,"utf8"))),5000);
+    }
+  }
+},30000);
+
+test("native handoff is single use and never falls back; portable restoration sends only its selection once",async()=>{
+  const messages=join(directory,"restore.messages");
+  const config={...options("restore","chat",{BRIDGE_TEST_MESSAGES:messages}),continuation_scope:"test-profile"};
+  let host=new BridgeHost(binary);let continuation="";let sessionId="";let selected="";let slot="";
+  try {
+    const source=await host.createSession(config);sessionId=source.id;slot=source.slotId;
+    await text(source.run("selected history"));
+    selected=(await source.history()).records.find(r=>r.payload.type==="message" && r.actor==="user")!.id;
+    continuation=(await source.handoff()).continuation_id;
+    expect(()=>source.run("stale handle")).toThrow("released");
+  }finally{await host.close();}
+  host=new BridgeHost(binary);
+  try {
+    expect((await host.discover(config.database,"continuations")).items).toEqual([{id:continuation,session_id:sessionId,slot_id:slot,state:"available",latest:true}]);
+    await expect(host.restoreSession({...config,continuation_scope:"wrong-profile"},{strategy:"native",session_id:sessionId,continuation})).rejects.toHaveProperty("code","session_setup_failed");
+    expect((await host.discover(config.database,"continuations")).items[0]!.state).toBe("available");
+    const resumed=await host.restoreSession(config,{strategy:"native",session_id:sessionId,continuation});
+    expect(resumed.slotId).toBe(slot);expect((resumed.restoration as any).native_context).toBe("reused_uninspected");
+    await text(resumed.run("native continuation task"));
+    const frames=readFileSync(messages,"utf8").trim().split("\n").map(line=>JSON.parse(line));
+    expect(frames.filter(f=>f.method==="session/new")).toHaveLength(1);
+    expect(frames.filter(f=>f.method==="session/resume")).toHaveLength(1);
+    expect(frames.filter(f=>f.method==="session/prompt").at(-1).params.prompt[0].text).toBe("native continuation task");
+    expect((await host.discover(config.database,"continuations")).items[0]!.state).toBe("claimed");
+  }finally{await host.close();}
+  host=new BridgeHost(binary);
+  try {
+    await expect(host.restoreSession(config,{strategy:"native",session_id:sessionId,continuation})).rejects.toHaveProperty("code","session_setup_failed");
+    const restored=await host.restoreSession(config,{strategy:"portable",session_id:sessionId,context:{mode:"append_to_native",records:[selected]}});
+    expect(restored.slotId).not.toBe(slot);
+    expect((restored.restoration as any).native_context).toBe("new_session");
+    if(restored.restoration?.strategy!=="portable_selection")throw new Error("missing portable setup report");
+    expect(restored.restoration.selected_records).toEqual([{id:selected,revision:"0"}]);
+    const invalid=restored.run("cannot bypass selection",{result:countResult});
+    await expect(invalid.completed).rejects.toHaveProperty("code","start_failed");
+    await text(restored.run("portable task"));await text(restored.run("next turn"));
+    const prompts=readFileSync(messages,"utf8").trim().split("\n").map(line=>JSON.parse(line)).filter(f=>f.method==="session/prompt");
+    const wire=JSON.parse(prompts.at(-2).params.prompt[0].text);
+    expect(wire.history.map((r:any)=>r.id)).toEqual([selected]);expect(wire.task).toBe("portable task");
+    expect(prompts.at(-1).params.prompt[0].text).toBe("next turn");
+    const reports=(await restored.history()).records.filter(r=>r.payload.type==="extension" && (r.payload.data as any).name==="restoration");
+    expect(reports.map(r=>(r.payload.data as any).data.strategy)).toEqual(["native_resume","portable_selection"]);
+  }finally{await host.close();}
+  host=new BridgeHost(binary);
+  const deleted=join(directory,"undispatched-restore.deleted");
+  try {
+    await host.restoreSession({...config,delete_session_on_close:true,env:{BRIDGE_TEST_DELETED:deleted}},
+      {strategy:"portable",session_id:sessionId,context:{mode:"append_to_native",records:[selected]}});
+  }finally{await host.close();}
+  expect(existsSync(deleted)).toBe(true);
+},30000);
+
+test("SIGKILL during application effects and questions leaves reviewable evidence without replay",async()=>{
+  for(const question of [false,true]){
+    let calls=0;let called!:()=>void;const entered=new Promise<void>(resolve=>called=resolve);
+    let release!:()=>void;const held=new Promise<void>(resolve=>release=resolve);
+    const tool=defineTool({name:"project_lookup",revision:"v1",description:"Crash probe",input:lookupInput,
+      async execute(_,context){calls++;if(question){await context.ask({title:"Proceed?",fields:[{id:"yes",label:"Proceed",required:true,kind:{type:"boolean"}}]});}else{called();await held;}return null;}});
+    const host=new BridgeHost(binary,{tools:[tool],questions:true,onQuestion(){called();}});
+    const pid=join(directory,`crash-tool-${question}.pid`);const helper=join(directory,`crash-tool-${question}.helper`);
+    const config={...toolAgent(`crash-tool-${question}`,{BRIDGE_TEST_PID:pid,BRIDGE_TEST_HELPER_PID:helper}),allowTools:[tool]};
+    try{
+      const session=await host.createSession(config);const run=session.run("execute");run.events.close();await within(entered,10000);
+      await killHost(host);release();
+      const reopened=new BridgeHost(binary,{tools:[tool],questions:true});
+      try{
+        const interactions=await reopened.discover(config.database,"interactions");
+        expect(interactions.items.some(i=>i.kind==="application_tool_outcome_unknown" && i.run_id===null)).toBe(true);
+        if(question)expect(interactions.items.some(i=>i.kind==="question_without_answer" && i.source?.namespace==="agent_bridge.tool_invocation")).toBe(true);
+        expect(await reopened.pendingQuestions()).toEqual([]);expect(calls).toBe(1);
+      }finally{await reopened.close();}
+    }finally{release();await host.close().catch(()=>{});for(const file of [pid,helper])if(existsSync(file))await until(()=>stopped(Number(readFileSync(file,"utf8"))),5000);}
+  }
+},30000);
+
+test("dispatch intent write failures prevent sends and leave decisions pending",async()=>{
+  for(const state of ["prepared","dispatch_attempted"]){
+    const host=new BridgeHost(binary);const messages=join(directory,`intent-${state}.messages`);
+    const config=options(`intent-${state}`,"chat",{BRIDGE_TEST_MESSAGES:messages});
+    try{
+      const session=await host.createSession(config);const sql=new Database(config.database);
+      try{
+        sql.exec(`CREATE TRIGGER block_intent BEFORE INSERT ON agent_bridge_records WHEN json_extract(NEW.payload_json,'$.data.data.name')='run_dispatch' AND json_extract(NEW.payload_json,'$.data.data.data.state')='${state}' BEGIN SELECT RAISE(ABORT,'intent unavailable'); END;`);
+        await expect(session.run("must not dispatch").completed).rejects.toHaveProperty("code","start_failed");
+        expect(readFileSync(messages,"utf8")).not.toContain("session/prompt");
+        const report=(await host.discover(config.database,"runs")).items[0]!;
+        expect(report.dispatch).toBe(state==="prepared" ? "missing_evidence":"not_dispatched");
+      }finally{sql.close();}
+    }finally{await host.close();}
+  }
+  const host=new BridgeHost(binary);const config=options("decision-intent","permission");
+  try{
+    const session=await host.createSession(config);const sql=new Database(config.database);
+    try{
+      sql.exec("CREATE TRIGGER block_decision BEFORE INSERT ON agent_bridge_records WHEN json_extract(NEW.payload_json,'$.data.data.name')='permission_dispatch' BEGIN SELECT RAISE(ABORT,'decision intent unavailable'); END;");
+      const run=session.run("ask");
+      for await(const event of run.events){if(event.event==="permission"){
+        await expect(run.respond(event.permission_id,"allow")).rejects.toHaveProperty("code","invalid_response");
+        expect((await run.pendingPermissions()).map(p=>p.permission_id)).toContain(event.permission_id);
+        sql.exec("DROP TRIGGER block_decision");await run.respond(event.permission_id,"allow");
+      }}
+      expect((await run.completed).status).toBe("completed");
+    }finally{sql.close();}
+  }finally{await host.close();}
+},15000);
+
+test("native setup failure consumes its claim and reused tool scopes require a new host",async()=>{
+  const tool=defineTool({name:"project_lookup",revision:"v1",description:"Lookup",input:lookupInput,execute(){return null;}});
+  const config={...options("resume-failure"),continuation_scope:"profile",allowTools:[tool]};
+  let host=new BridgeHost(binary,{tools:[tool]});let id="";let continuation="";
+  try{
+    const session=await host.createSession(config);id=session.id;await text(session.run("ready"));continuation=(await session.handoff()).continuation_id;
+    await expect(host.restoreSession(config,{strategy:"native",session_id:id,continuation})).rejects.toThrow("tool scope already used");
+    expect((await host.discover(config.database,"continuations")).items[0]!.state).toBe("available");
+  }finally{await host.close();}
+  host=new BridgeHost(binary);
+  const messages=join(directory,"resume-failure.messages");
+  try{
+    await expect(host.restoreSession({...config,allowTools:[],args:["resume-missing"],env:{BRIDGE_TEST_MESSAGES:messages}},{strategy:"native",session_id:id,continuation})).rejects.toThrow("native session missing");
+    expect((await host.discover(config.database,"continuations")).items[0]!.state).toBe("claimed");
+    const log=readFileSync(messages,"utf8");expect(log).toContain("session/resume");expect(log).not.toContain("session/new");expect(log).not.toContain("session/prompt");
+    await expect(host.restoreSession({...config,allowTools:[]},{strategy:"native",session_id:id,continuation})).rejects.toHaveProperty("code","session_setup_failed");
+  }finally{await host.close();}
+},15000);
+
 test("selected context and validated results retain exact delivery and reopen evidence", async () => {
   const host = new BridgeHost(binary);
   const messages = join(directory,"selected-messages");

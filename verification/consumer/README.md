@@ -20,7 +20,8 @@ The consumer discovers a configuration catalog and switches models between two
 turns using the compiled configuration fixture. It then starts a tool session,
 delivers selected text context, validates the returned JSON, reads streamed text, handles an application tool
 and a scripted question, cancels a second invocation, and closes the host. A new
-host then reads the exact saved records and builds a typed transcript projection.
+host then reads the exact saved records, builds a typed transcript projection,
+discovers saved sessions/runs/continuations, and explicitly resumes a native handoff.
 Assertions check a fresh application token, the persisted answer, input/result and tool receipts,
 handler cancellation, and terminal outcomes. Execution has a 60-second deadline.
 

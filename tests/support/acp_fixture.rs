@@ -412,7 +412,9 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                     session,
                     r#"{"sessionUpdate":"agent_message_chunk","messageId":"message-1","content":{"type":"text","text":"world"}}"#,
                 );
+                gate("BRIDGE_TEST_COMPLETION_GATE");
                 reply(id, r#"{"stopReason":"end_turn"}"#);
+                if let Ok(path)=std::env::var("BRIDGE_TEST_COMPLETION_SENT") {std::fs::write(path,"sent").unwrap();}
             }
         } else if line.contains("\"method\":\"session/cancel\"") {
             let session = scalar(&line, "sessionId");
@@ -426,6 +428,7 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
         } else if line.contains("\"result\"") {
             let response_id = scalar(&line, "id");
             if let Some(session) = permissions.remove(response_id) {
+                gate("BRIDGE_TEST_DECISION_GATE");
                 if let Some((_, remaining, cancelled)) = pending.get_mut(&session) {
                     *remaining -= 1;
                     *cancelled |= line.contains("\"outcome\":\"cancelled\"");
@@ -448,6 +451,17 @@ fn serve_sessions(mode: &str, input: &mut impl BufRead) {
                     }
                 }
             }
+        }
+    }
+}
+
+fn gate(variable: &str) {
+    if let Ok(path) = std::env::var(variable) {
+        std::fs::write(format!("{path}.ready"),"ready").unwrap();
+        let deadline = std::time::Instant::now()+Duration::from_secs(10);
+        while !std::path::Path::new(&format!("{path}.go")).exists() {
+            assert!(std::time::Instant::now()<deadline,"fixture gate timed out");
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }

@@ -108,8 +108,9 @@ Tests cover typed argument rejection, scope/revision checks, filtered discovery,
 duplicate registration, cancellation, MCP request routing, and spoofed metadata.
 The registry itself does not persist invocation receipts or reconcile uncertain
 effects. ACP recording preserves provider-observed tool activity. The host now writes
-separate authoritative invocation receipts and rejects duplicate results; post-crash
-reconciliation remains H3. Optional `dynamic-tools` adds runtime schema registration
+separate authoritative invocation receipts and rejects duplicate results. [Restart
+discovery](host-recovery.md) identifies unknown outcomes; the application owns effect
+reconciliation. Optional `dynamic-tools` adds runtime schema registration
 with the subset and limits described in the hosted guide.
 
 Next M4 work covers structured questions, application approval orchestration,

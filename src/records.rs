@@ -18,7 +18,7 @@ pub use question::{
 #[cfg(feature = "sqlite")]
 mod sqlite;
 #[cfg(feature = "sqlite")]
-pub use sqlite::SqliteStore;
+pub use sqlite::{InteractionRecovery, RunRecovery, SqliteStore};
 
 use crate::{ActorId, Message, Record, RecordId, RunId, RunSpec, SessionId};
 use serde_json::Value;
