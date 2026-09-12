@@ -131,3 +131,9 @@ cross-process exclusion, automatic reconciliation, or universal native compatibi
 Linux is the only locally exercised host platform. No public alpha or cross-platform
 support claim follows from this first host implementation. Claude authenticated checks
 remain deferred because no local authenticated installation is available.
+
+H4 now verifies extracted Rust and installed Bun artifacts, a frozen schema-1
+upgrade, wire-version rejection, and the full Linux host fault suite. OpenCode and
+Codex also passed live checks through those artifacts on September 12, 2026.
+Independent developer integration and final publication remain open;
+see the [release checklist](release.md). Gate 6 is not yet complete.

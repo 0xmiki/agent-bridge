@@ -1,6 +1,7 @@
 {
   "name": "agent-bridge",
   "version": "0.1.0-alpha.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,7 +11,7 @@
     "./state": "./state.ts",
     "./receipts": "./receipts.ts"
   },
-  "files": ["client.ts", "tools.ts", "questions.ts", "state.ts", "receipts.ts"],
+  "files": ["client.ts", "tools.ts", "questions.ts", "state.ts", "receipts.ts", "LICENSE"],
   "engines": { "bun": ">=1.3.13" },
   "scripts": {
     "test": "bun test client.test.ts",

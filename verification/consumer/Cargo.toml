@@ -1,0 +1,17 @@
+[package]
+name = "packaged-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+agent-bridge = { path = "./agent-bridge-0.1.0", features = ["acp", "sqlite", "receipts"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+
+[[bin]]
+name = "packaged-rust-consumer"
+path = "rust_integration.rs"
+
+[[bin]]
+name = "upgrade-consumer"
+path = "upgrade.rs"

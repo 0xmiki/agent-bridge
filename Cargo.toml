@@ -3,6 +3,10 @@ name = "agent-bridge"
 version = "0.1.0"
 edition = "2024"
 description = "Connect applications to installed AI agents"
+license = "MIT"
+repository = "https://github.com/0xmiki/agent-bridge"
+publish = false
+include = ["/src/**", "/host/**/*.rs", "/examples/**", "/tests/**", "/verification/receipts.json", "/Cargo.lock", "/README.md", "/LICENSE", "/docs/**"]
 
 [features]
 default = []

@@ -94,21 +94,22 @@ a frozen text selection. No automatic claim release, effect reconciliation, powe
 guarantee, or cross-process exclusion is claimed. Hosted H3 uses deterministic
 providers; it adds no new live-provider compatibility claim. Next: H4 release checks.
 
-## H4 — Public ACP alpha (planned)
+## H4 — Public ACP alpha (in progress)
 
 Outcome: an independent developer installs packages and succeeds. Acceptance: gate 6.
 
-- [ ] Package Rust and TypeScript entry points; compile consumer examples.
-- [ ] Previous-database upgrade fixtures and wire compatibility checks.
-- [ ] Publish provider/version/OS evidence and limitations.
-- [ ] Lifecycle and descendant cleanup on every advertised OS.
+- [x] Package Rust and TypeScript entry points; compile consumer examples.
+- [x] Previous-database upgrade fixture and wire compatibility checks.
+- [ ] Publish provider/version/OS evidence and limitations (documented locally).
+- [x] Lifecycle and descendant cleanup on every advertised OS (Linux only).
 - [ ] Independent consumer integration/review; resolve release blockers.
 
-The [packaged Bun consumer](verification/consumer/README.md) now installs a local
-TypeScript tarball outside the checkout and exercises streaming, tools, questions,
-cancellation, shutdown, and reopened state through declared package imports. Linux
-CI runs it against the deterministic provider. Rust package installation, live
-provider checks against artifacts, and independent developer review remain open.
+The [packaged consumer](verification/consumer/README.md) installs both a Rust archive
+and a TypeScript tarball outside the checkout. It compiles every Rust target, runs
+the direct Rust example, upgrades a frozen schema-1 fixture, rejects future schema
+and wire versions, and runs the hosted workflow plus all 56 host tests against the
+installed binary. Linux CI uses the same script; local results are not remote CI
+evidence. See the [release checklist](docs/release.md) for the remaining blockers.
 
 The current crate version is scaffold metadata, not a released alpha.
 

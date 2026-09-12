@@ -1,6 +1,6 @@
-import { BridgeHost, type StoredRecord } from "./client";
+import { BridgeHost, type StoredRecord } from "agent-bridge";
 import assert from "node:assert/strict";
-import { SessionState } from "./state";
+import { SessionState } from "agent-bridge/state";
 import { resolve } from "node:path";
 
 const [database, workspace, executable, ...args] = process.argv.slice(2);

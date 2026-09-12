@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {resolve} from "node:path";
-import {BridgeHost,type StoredRecord,type RunOptions} from "./client";
-import {readReceipt} from "./receipts";
+import {BridgeHost,type StoredRecord,type RunOptions} from "agent-bridge";
+import {readReceipt} from "agent-bridge/receipts";
 
 const [database,workspace,executable,...args] = process.argv.slice(2);
 if(!database || !workspace || !executable) throw new Error("bun host/interactions-example.ts <database> <workspace> <ACP executable> [args...]");

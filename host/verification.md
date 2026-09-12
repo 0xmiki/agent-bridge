@@ -330,3 +330,36 @@ This completes H3 within the [documented local restart scope](../docs/host-recov
 There was no new authenticated provider run for H3. Power loss, OS variants,
 cross-process exclusion, automatic effect reconciliation, and recovery of an uncertain
 native continuation claim remain outside the contract. H4 release work remains open.
+
+## H4 installed artifacts, September 12
+
+The consumer script now packages Rust, extracts the archive, installs its host,
+and compiles all packaged targets. A separate Rust consumer runs the documented
+integration example against the extracted crate. The Bun consumer installs its
+tarball and uses the installed host. Frozen schema-1 evidence upgrades to schema 7
+with exact record rows, application data, and `user_version` preserved. Unsupported
+schemas and wire versions are rejected. All 56 host tests (1006 assertions) passed
+against the installed binary, including Linux descendant cleanup and crash tests.
+
+The retained artifact directory is `/tmp/agent-bridge-consumer-KgjOikrz`.
+Installed-package live demos passed with these versions:
+
+| Provider | Versions | Artifact check |
+| --- | --- | --- |
+| OpenCode | 1.18.25 | Two completed turns, unique-phrase recall, third turn cancelled, exact 19-record reopen |
+| Codex | CLI 0.154.0 via codex-acp 1.10.0 | Two validated turns using a text resource then selected history, exact 27-record reopen |
+| Claude | Not run | Authenticated verification remains deferred |
+
+The Codex adapter used the explicit local `CODEX_PATH`. Cleanup succeeded, and a
+read-only check of thread `01a0973f-a3fd-7510-b44a-8a32a54d988f` confirmed
+`archived = 1`. These are specific workflow observations, not all-provider feature
+parity or new live native-restoration evidence.
+
+This is local Linux/NixOS evidence with Bun 1.3.13 and Rust 1.95.0. Live checks used
+a debug-profile host installed from a local archive using cached dependencies.
+A final consumer run at `/tmp/agent-bridge-consumer-dqYJGpfI` installed Cargo's
+default release-profile host and passed the Rust/Bun consumers, compatibility
+checks, and all 56 host tests again. The 193 Rust tests, Clippy, rustfmt, and
+TypeScript checks also passed locally.
+No registry package, public release, remote CI result, or independent developer
+review is claimed. H4 remains in progress; see the [release checklist](../docs/release.md).

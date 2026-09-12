@@ -26,8 +26,12 @@ activity, routes permission decisions, and handles cancellation. It can supply
 existing MCP server configuration when creating a session. Recorded runs assemble
 portable transcripts through memory or SQLite stores. Native ACP sessions can be
 handed off and resumed through single-use continuations. Grant policies and portable
-context restoration are implemented in Rust. Restart reconciliation and exposing
-these features through the host remain on the roadmap.
+context restoration are implemented in Rust and exposed through the
+[host restart API](docs/host-recovery.md). Uncertain effects require application
+review; the bridge does not replay them automatically.
+
+The [release checklist](docs/release.md) records package-installation evidence and
+the remaining public-alpha blockers. No package has been published.
 
 Model and option changes can be applied between runs. Requested selections and
 provider-reported settings are stored with each run; later configuration reports
