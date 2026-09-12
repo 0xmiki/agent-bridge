@@ -135,5 +135,6 @@ remain deferred because no local authenticated installation is available.
 H4 now verifies extracted Rust and installed Bun artifacts, a frozen schema-1
 upgrade, wire-version rejection, and the full Linux host fault suite. OpenCode and
 Codex also passed live checks through those artifacts on September 12, 2026.
-Independent developer integration and final publication remain open;
+Independent developer review is deferred by the maintainer for the experimental
+Rust alpha, not completed. Final publication remains open;
 see the [release checklist](release.md). Gate 6 is not yet complete.

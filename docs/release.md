@@ -41,9 +41,9 @@ local path. These are local checks, not a remote CI result or independent review
   The initial registry API lookup returned HTTP 403, so name availability is unconfirmed.
 - Authenticate locally for crates.io publication. Never put a registry token in
   source control or chat. No actual publication is part of the preparation checks.
-- Have an independent developer integrate the packages into their application and
-  report installation, API, and lifecycle problems. Resolve release blockers before
-  marking H4 complete. The repository's own consumer is not independent review.
+- Independent developer review is deferred by the maintainer for this experimental
+  Rust alpha. It is not a publication prerequisite for this release and has not been
+  completed. The repository's own consumer and Chesscave trial are not independent review.
 - Record the final artifact checks and actual CI result, then publish the packages,
   tag the release, and provide installation instructions with these support limits.
 

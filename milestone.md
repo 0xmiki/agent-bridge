@@ -102,7 +102,7 @@ Outcome: an independent developer installs packages and succeeds. Acceptance: ga
 - [x] Previous-database upgrade fixture and wire compatibility checks.
 - [ ] Publish provider/version/OS evidence and limitations (documented locally).
 - [x] Lifecycle and descendant cleanup on every advertised OS (Linux only).
-- [ ] Independent consumer integration/review; resolve release blockers.
+- [ ] Independent consumer integration/review (maintainer deferred this for the experimental Rust alpha).
 
 The [packaged consumer](verification/consumer/README.md) installs both a Rust archive
 and a TypeScript tarball outside the checkout. It compiles every Rust target, runs
